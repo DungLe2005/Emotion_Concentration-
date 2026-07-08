@@ -1,0 +1,128 @@
+# =========================================================================
+# Python - Environment, Cache, and Build Files
+# =========================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# pytest and coverage
+.pytest_cache/
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+
+# =========================================================================
+# Node / Frontend - Dependencies and Build Outputs
+# =========================================================================
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/local.properties
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+
+# =========================================================================
+# Project-Specific Generated Directories & Outputs
+# =========================================================================
+# Generated report and temporary render folders
+tmp_render/
+rendered_report/
+
+# Backend runtime output and generated files
+backend/output/
+
+# Dataset folders (uncomment if you want to ignore all local datasets)
+
+data/
+# data/Train/
+# data/Test/
+# data/cropped_faces/
+# data/extracted_features/
+
+# Large Model Weights (uncomment if you do not want to track weights in git)
+# *.pth
+# *.onnx
+# *.pb
+
+# =========================================================================
+# Operating System & IDE Files
+# =========================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.lnk
+*.cab
+*.msi
+*.msm
+*.msp
+
+# Office lock files
+.~lock.*
+
+# IDEs and Editors
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.bak
+*~

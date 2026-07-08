@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+numpy
+pandas
+torch
+torchvision
+retina-face
+opencv-python
+pydantic
+python-multipart
+scikit-learn
