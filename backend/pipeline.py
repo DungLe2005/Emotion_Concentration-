@@ -30,11 +30,14 @@ class EmotionPipeline:
         print("[AI] Đang nạp RetinaFace Model...")
         self.retinaface_model = RetinaFace.build_model()
 
-        # 3. Load EPSO Mask
-        try:
-            self.epso_mask = np.load("epso_mask_real.npy")
-        except:
-            self.epso_mask = np.arange(512)
+        # 3. Load EPSO Mask (BẮT BUỘC phải tồn tại - chạy train_epso.py để tạo)
+        epso_mask_path = os.path.join(os.path.dirname(__file__), "epso_mask_real.npy")
+        if not os.path.exists(epso_mask_path):
+            raise FileNotFoundError(
+                f"[AI] LỖI NGHIÊM TRỌNG: Không tìm thấy file '{epso_mask_path}'. "
+                "Cần chạy train_epso.py trước để tạo file này."
+            )
+        self.epso_mask = np.load(epso_mask_path)
         reduced_dim = len(self.epso_mask)
 
         # 4. Tìm nhãn (labels mapping)
@@ -42,20 +45,17 @@ class EmotionPipeline:
         labels_list = df["label"].unique()
         self.idx_to_label = {idx: label for idx, label in enumerate(labels_list)}
 
-        # 5. Load MLP (EPSO)
+        # 5. Load MLP (EPSO) - KHÔNG catch lỗi để phát hiện ngay nếu weights sai
         self.mlp = EmotionMLP(input_dim=reduced_dim, num_classes=len(labels_list)).to(
             self.device
         )
-        try:
-            self.mlp.load_state_dict(
-                torch.load(
-                    "emotion_mlp_epso_weights.pth",
-                    map_location=self.device,
-                    weights_only=True,
-                )
+        self.mlp.load_state_dict(
+            torch.load(
+                "emotion_mlp_epso_weights.pth",
+                map_location=self.device,
+                weights_only=True,
             )
-        except Exception as e:
-            print(f"[AI] Lỗi nghiêm trọng: Không thể load EPSO MLP weights: {e}")
+        )
         self.mlp.eval()
 
         print(f"[AI] Đã nạp thành công MLP với đầu vào {len(self.epso_mask)} chiều.")

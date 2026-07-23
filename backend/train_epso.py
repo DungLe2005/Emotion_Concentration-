@@ -5,8 +5,18 @@ from torch.utils.data import Dataset, DataLoader, TensorDataset
 import pandas as pd
 import numpy as np
 import os
+import json
 from tqdm import tqdm
-from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+    classification_report,
+)
 import matplotlib.pyplot as plt
 from models.mlp import EmotionMLP
 from models.epso import EPSOFeatureSelector
@@ -404,6 +414,10 @@ def train_pipeline():
     all_preds = np.array(all_preds)
     all_probs = np.array(all_probs)
 
+    output_dir = os.path.join(os.path.dirname(__file__), "output")
+    os.makedirs(output_dir, exist_ok=True)
+
+    accuracy = accuracy_score(all_labels, all_preds)
     precision = precision_score(all_labels, all_preds, average="macro", zero_division=0)
     recall = recall_score(all_labels, all_preds, average="macro", zero_division=0)
     f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
@@ -415,37 +429,75 @@ def train_pipeline():
     except Exception as e:
         roc_auc = float("nan")
 
+    classes_names = [k for k in sorted(label_to_idx, key=label_to_idx.get)]
+    report_dict = classification_report(
+        all_labels, all_preds, target_names=classes_names, output_dict=True, zero_division=0
+    )
+    report_text = classification_report(
+        all_labels, all_preds, target_names=classes_names, zero_division=0
+    )
+
+    cm = confusion_matrix(all_labels, all_preds)
+
+    print(f"Accuracy:          {accuracy:.4f} ({(accuracy*100):.2f}%)")
     print(f"Precision (Macro): {precision:.4f} ({(precision*100):.2f}%)")
     print(f"Recall (Macro):    {recall:.4f} ({(recall*100):.2f}%)")
     print(f"F1-Score (Macro):  {f1:.4f} ({(f1*100):.2f}%)")
     print(f"ROC-AUC (Macro):   {roc_auc:.4f} ({(roc_auc*100):.2f}%)")
 
-    print("\n=== BƯỚC 5: ĐỒ THỊ CONFUSION MATRIX ===")
-    classes_names = [k for k in sorted(label_to_idx, key=label_to_idx.get)]
-    cm = confusion_matrix(all_labels, all_preds)
-    
-    # In dạng bảng văn bản trên Console
-    print("\nConfusion Matrix (Bảng văn bản):")
-    col_width = max(len(name) for name in classes_names) + 2
-    header = " " * col_width + "".join(f"{name:>{col_width}}" for name in classes_names)
-    print(header)
-    for i, row_label in enumerate(classes_names):
-        row_str = f"{row_label:<{col_width}}" + "".join(f"{val:>{col_width}}" for val in cm[i])
-        print(row_str)
-        
-    # Vẽ và lưu hình ảnh đồ thị
+    # 1. Lưu metrics.json vào output/
+    metrics_data = {
+        "accuracy": float(accuracy),
+        "precision_macro": float(precision),
+        "recall_macro": float(recall),
+        "f1_macro": float(f1),
+        "roc_auc_macro": float(roc_auc) if not np.isnan(roc_auc) else None,
+        "classification_report": report_dict,
+    }
+    metrics_json_path = os.path.join(output_dir, "metrics.json")
+    with open(metrics_json_path, "w", encoding="utf-8") as f:
+        json.dump(metrics_data, f, indent=4, ensure_ascii=False)
+    print(f"\n[Thành công] Đã lưu chỉ số đánh giá JSON tại: {metrics_json_path}")
+
+    # 2. Lưu evaluation_summary.txt vào output/
+    summary_txt_path = os.path.join(output_dir, "evaluation_summary.txt")
+    with open(summary_txt_path, "w", encoding="utf-8") as f:
+        f.write("=== KẾT QUẢ ĐÁNH GIÁ MÔ HÌNH (EVALUATION METRICS) ===\n\n")
+        f.write(f"Accuracy:          {accuracy:.4f} ({(accuracy*100):.2f}%)\n")
+        f.write(f"Precision (Macro): {precision:.4f} ({(precision*100):.2f}%)\n")
+        f.write(f"Recall (Macro):    {recall:.4f} ({(recall*100):.2f}%)\n")
+        f.write(f"F1-Score (Macro):  {f1:.4f} ({(f1*100):.2f}%)\n")
+        f.write(f"ROC-AUC (Macro):   {roc_auc:.4f} ({(roc_auc*100):.2f}%)\n\n")
+        f.write("--- DETAILED CLASSIFICATION REPORT ---\n")
+        f.write(report_text)
+        f.write("\n\n--- CONFUSION MATRIX ---\n")
+        col_width = max(len(name) for name in classes_names) + 2
+        header = " " * col_width + "".join(f"{name:>{col_width}}" for name in classes_names)
+        f.write(header + "\n")
+        for i, row_label in enumerate(classes_names):
+            row_str = f"{row_label:<{col_width}}" + "".join(f"{val:>{col_width}}" for val in cm[i])
+            f.write(row_str + "\n")
+    print(f"[Thành công] Đã lưu báo cáo đánh giá TXT tại: {summary_txt_path}")
+
+    # 3. Lưu confusion_matrix.csv vào output/
+    cm_df = pd.DataFrame(cm, index=classes_names, columns=classes_names)
+    cm_csv_path = os.path.join(output_dir, "confusion_matrix.csv")
+    cm_df.to_csv(cm_csv_path)
+    print(f"[Thành công] Đã lưu Confusion Matrix CSV tại: {cm_csv_path}")
+
+    # 4. Lưu đồ thị confusion_matrix.png vào output/
     try:
         plt.figure(figsize=(10, 8))
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=classes_names)
         disp.plot(cmap=plt.cm.Blues, ax=plt.gca(), xticks_rotation=45)
         plt.title("Confusion Matrix - Emotion Classification")
         plt.tight_layout()
-        plot_path = "confusion_matrix.png"
+        plot_path = os.path.join(output_dir, "confusion_matrix.png")
         plt.savefig(plot_path, dpi=300)
         plt.close()
-        print(f"\n[Thành công] Đã vẽ và lưu đồ thị Confusion Matrix tại: {plot_path}")
+        print(f"[Thành công] Đã vẽ và lưu đồ thị Confusion Matrix tại: {plot_path}")
     except Exception as e:
-        print(f"\n[Lỗi] Không thể vẽ đồ thị Confusion Matrix: {e}")
+        print(f"[Lỗi] Không thể vẽ đồ thị Confusion Matrix: {e}")
 
 
 if __name__ == "__main__":
