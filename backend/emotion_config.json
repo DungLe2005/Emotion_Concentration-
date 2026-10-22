@@ -1,0 +1,20 @@
+{
+  "weights": {
+    "neutral": 19.0667,
+    "happy": 1.1681,
+    "surprise": 11.5384,
+    "sad": -4.7819,
+    "fear": -15.3834,
+    "angry": -9.0782,
+    "disgust": -2.5308
+  },
+  "auto_end_empty_limit": 2,
+  "sampling_interval_seconds": 30,
+  "min_faces_threshold": 1,
+  "calibration_metadata": {
+    "pearson_r": 0.9426,
+    "p_value": 4.4436627554439766e-06,
+    "num_samples": 60,
+    "calibrated_at": "2026-07-28 15:31:45"
+  }
+}

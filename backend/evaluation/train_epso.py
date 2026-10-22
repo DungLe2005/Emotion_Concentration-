@@ -1,10 +1,11 @@
+import sys
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, TensorDataset
 import pandas as pd
 import numpy as np
-import os
 import json
 from tqdm import tqdm
 from sklearn.metrics import (
@@ -18,9 +19,54 @@ from sklearn.metrics import (
     classification_report,
 )
 import matplotlib.pyplot as plt
+from sklearn.utils.class_weight import compute_class_weight
+import torch.nn.functional as F
+import shutil
+
+# Thêm sys.path gốc backend
+BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+
 from models.mlp import EmotionMLP
 from models.epso import EPSOFeatureSelector
-from sklearn.utils.class_weight import compute_class_weight
+from dataset.dataset_loader import DatasetRegistry, STANDARD_LABEL_TO_IDX
+from dataset.dataset_preprocessor import load_dataset_cache, combine_dataset_caches, MultiDatasetPreprocessor
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, weight=None, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.weight = weight
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.weight, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
+class ConfusionPenaltyLoss(nn.Module):
+    def __init__(self, num_classes, penalty_pairs, device):
+        super().__init__()
+        self.penalty_matrix = torch.ones(num_classes, num_classes, device=device)
+        for true_cls, pred_cls, multiplier in penalty_pairs:
+            self.penalty_matrix[true_cls][pred_cls] = multiplier
+
+    def forward(self, logits, targets):
+        probs = F.softmax(logits, dim=1)
+        penalty_rows = self.penalty_matrix[targets]
+        wrong_prob_penalty = (penalty_rows - 1) * probs
+        penalty_loss = wrong_prob_penalty.sum(dim=1).mean()
+
+        return penalty_loss
 
 
 class EarlyStopping:
@@ -67,92 +113,71 @@ class EarlyStopping:
         self.val_loss_min = val_loss
 
 
-def load_data(csv_file, feature_dir, test_dir, expected_dim=512):
-    cache_file = "dataset_cache.npz"
+def load_data(csv_file=None, feature_dir=None, test_dir=None, expected_dim=544, dataset_names=None):
+    if dataset_names is not None:
+        if isinstance(dataset_names, str):
+            dataset_names = [dataset_names]
+        print(f"Đang nạp dữ liệu đặc trưng cho bộ datasets: {dataset_names}...")
+        
+        cache_dir = BACKEND_DIR
+        for ds in dataset_names:
+            possible_cache = os.path.join(cache_dir, f"cache_{ds.lower()}.npz")
+            if not os.path.exists(possible_cache) and not os.path.exists(os.path.join(cache_dir, "dataset_cache.npz")):
+                print(f"[Auto Preprocess] Chưa có cache cho dataset '{ds}'. Tiến hành trích xuất...")
+                preprocessor = MultiDatasetPreprocessor()
+                preprocessor.process_and_cache_dataset(ds)
+                preprocessor.close()
+
+        if len(dataset_names) == 1:
+            data = load_dataset_cache(dataset_names[0], cache_dir=cache_dir)
+        else:
+            data = combine_dataset_caches(dataset_names, cache_dir=cache_dir)
+
+        X_train = data.get("X_train", np.array([]))
+        y_train = data.get("y_train", np.array([]))
+        X_test = data.get("X_test", np.array([]))
+        y_test = data.get("y_test", np.array([]))
+        label_to_idx = data.get("label_to_idx", STANDARD_LABEL_TO_IDX)
+
+        if isinstance(label_to_idx, np.ndarray):
+            label_to_idx = label_to_idx.item()
+
+        return X_train, y_train, X_test, y_test, label_to_idx
+
+    cache_file = os.path.join(BACKEND_DIR, "dataset_cache.npz")
     if os.path.exists(cache_file):
-        print("TÌM THẤY FILE CACHE. Đang nạp dữ liệu siêu tốc từ npz...")
+        print("TÌM THẤY FILE CACHE dataset_cache.npz. Đang nạp dữ liệu siêu tốc...")
         data = np.load(cache_file, allow_pickle=True)
         return (
             data["X_train"],
             data["y_train"],
             data["X_test"],
             data["y_test"],
-            data["label_to_idx"].item(),
+            data["label_to_idx"].item() if isinstance(data["label_to_idx"], np.ndarray) else data["label_to_idx"],
         )
 
-    df = pd.read_csv(csv_file)
-    labels_list = df["label"].unique()
-    label_to_idx = {label: idx for idx, label in enumerate(labels_list)}
-
-    X_train, y_train = [], []
-    X_test, y_test = [], []
-
-    print("CHƯA CÓ CACHE. Đang quét 28,000+ files `.pt` (Có thể mất 15 phút)...")
-    for idx, row in tqdm(df.iterrows(), total=len(df)):
-        feat_path = os.path.join(
-            feature_dir, row["pth"].replace(".jpg", ".pt").replace(".png", ".pt")
-        )
-
-        if os.path.exists(feat_path):
-            feature = torch.load(feat_path, weights_only=True)
-            if feature.shape[0] != expected_dim:
-                print(
-                    f"Bỏ qua {feat_path} do sai kích thước ({feature.shape[0]} != {expected_dim})"
-                )
-                continue
-        else:
-            continue
-
-        raw_test_path = os.path.join(test_dir, row["pth"])
-        if os.path.exists(raw_test_path):
-            X_test.append(feature.numpy())
-            y_test.append(label_to_idx[row["label"]])
-        else:
-            X_train.append(feature.numpy())
-            y_train.append(label_to_idx[row["label"]])
-
-            base_feat_path = feat_path.replace(".pt", "")
-            aug_idx = 0
-            while True:
-                aug_path = f"{base_feat_path}_aug_{aug_idx}.pt"
-                if os.path.exists(aug_path):
-                    try:
-                        aug_feature = torch.load(aug_path, weights_only=True)
-                        if aug_feature.shape[0] == expected_dim:
-                            X_train.append(aug_feature.numpy())
-                            y_train.append(label_to_idx[row["label"]])
-                    except Exception as e:
-                        print(f"Lỗi khi đọc file tăng cường {aug_path}: {e}")
-                    aug_idx += 1
-                else:
-                    break
-
-    X_train, y_train = np.array(X_train), np.array(y_train)
-    X_test, y_test = np.array(X_test), np.array(y_test)
-
-    print("Đang lưu lại file cache npz để dùng cho lần sau...")
-    np.savez_compressed(
-        cache_file,
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        label_to_idx=label_to_idx,
-    )
-
-    return X_train, y_train, X_test, y_test, label_to_idx
+    try:
+        return load_data(dataset_names=["new_data"])
+    except Exception as e:
+        print(f"Lỗi nạp new_data mặc định: {e}")
+        raise e
 
 
-def train_pipeline():
-    print("=== BƯỚC 1: NẠP DỮ LIỆU (TỐI ƯU HÓA) ===")
-    csv_path = r"d:\Emotion_Concentration\data\labels.csv"
-    feature_dir = r"d:\Emotion_Concentration\data\extracted_features"
-    test_dir = r"d:\Emotion_Concentration\data\Test"
+def train_pipeline(dataset_names=None, run_benchmark_after=True):
+    print("=== BƯỚC 1: NẠP DỮ LIỆU (TỐI ƯU HÓA ĐA BỘ DỮ LIỆU) ===")
+    ORIGINAL_DIM = 544  # CLIP(512) + Prompts(7) + Landmark(25)
 
-    ORIGINAL_DIM = 512
+    if dataset_names is None:
+        dataset_names = ["new_data"]
+
+    # Xác định tên suffix cho file trọng số (dùng tên dataset nếu chỉ 1, nếu nhiều thì "combined")
+    if len(dataset_names) == 1:
+        ds_suffix = dataset_names[0].lower()
+    else:
+        ds_suffix = "_".join(sorted([d.lower() for d in dataset_names]))
 
     X_train, y_train, X_test, y_test, label_to_idx = load_data(
-        csv_path, feature_dir, test_dir, expected_dim=ORIGINAL_DIM
+        expected_dim=ORIGINAL_DIM, dataset_names=dataset_names
     )
     num_classes = len(label_to_idx)
 
@@ -160,16 +185,26 @@ def train_pipeline():
     print(f"Số lượng ảnh dùng để Kiểm tra (Tập Test gốc): {len(X_test)}")
 
     print("\n=== BƯỚC 2: RÚT GỌN ĐẶC TRƯNG VỚI EPSO ===")
-    epso_mask_path = "epso_mask_real.npy"
-    if os.path.exists(epso_mask_path):
-        print(f"TÌM THẤY MASK {epso_mask_path}. Bỏ qua chạy EPSO (Tái sử dụng).")
+    # Ưu tiên mask riêng theo dataset, fallback sang mask chung
+    epso_mask_path_ds = os.path.join(BACKEND_DIR, f"epso_mask_{ds_suffix}.npy")
+    epso_mask_path_default = os.path.join(BACKEND_DIR, "epso_mask_real.npy")
+
+    if os.path.exists(epso_mask_path_ds):
+        epso_mask_path = epso_mask_path_ds
+        print(f"TÌM THẤY MASK RIÊNG [{ds_suffix}]: {epso_mask_path}. Tái sử dụng.")
+        selected_indices = np.load(epso_mask_path)
+    elif os.path.exists(epso_mask_path_default):
+        epso_mask_path = epso_mask_path_default
+        print(f"TÌM THẤY MASK CHUNG: {epso_mask_path}. Tái sử dụng.")
         selected_indices = np.load(epso_mask_path)
     else:
+        epso_mask_path = epso_mask_path_ds
         epso_selector = EPSOFeatureSelector(
             dim=ORIGINAL_DIM, num_particles=15, max_iter=25
         )
         selected_indices = epso_selector.select_features(X_train, y_train)
         np.save(epso_mask_path, selected_indices)
+        print(f"Đã lưu EPSO mask mới tại: {epso_mask_path}")
 
     print(f"Kích thước đặc trưng sau EPSO: {len(selected_indices)}/{ORIGINAL_DIM}")
 
@@ -182,20 +217,43 @@ def train_pipeline():
     y_tensor = torch.tensor(y_train, dtype=torch.long)
 
     dataset = TensorDataset(X_tensor, y_tensor)
-    # Batch size nhỏ hơn = gradient noisier = khám phá loss landscape rộng hơn
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Thiết bị huấn luyện: {device}")
 
-    classes = np.unique(y_train)
-    weights = compute_class_weight(class_weight="balanced", classes=classes, y=y_train)
-    class_weights_tensor = torch.tensor(weights, dtype=torch.float32).to(device)
+    full_weights = np.ones(num_classes, dtype=np.float32)
+    unique_cls, counts = np.unique(y_train, return_counts=True)
+    total_samples = len(y_train)
+    for c, cnt in zip(unique_cls, counts):
+        full_weights[c] = total_samples / (len(unique_cls) * cnt)
+
+    smoothed_weights = np.sqrt(full_weights)
+    if len(smoothed_weights) > 1:
+        smoothed_weights[1] *= 2.2
+    class_weights_tensor = torch.tensor(smoothed_weights, dtype=torch.float32).to(device)
 
     model = EmotionMLP(input_dim=REDUCED_DIM, num_classes=num_classes).to(device)
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
-    # LR nhỏ hơn: bước đi nhỏ, từ từ tìm Global Minima
+    ce_criterion = nn.CrossEntropyLoss(weight=class_weights_tensor, label_smoothing=0.1)
+
+    confusion_pairs = [
+        (6, 1, 3.5),
+        (1, 2, 4.0),
+        (1, 4, 3.5),
+        (1, 3, 3.5),
+        (1, 5, 3.0),
+        (1, 0, 2.5),
+        (2, 1, 2.0),
+        (6, 2, 1.5),
+    ]
+    confusion_penalty = ConfusionPenaltyLoss(num_classes, confusion_pairs, device)
+
+    def criterion(outputs, labels):
+        ce = ce_criterion(outputs, labels)
+        penalty = confusion_penalty(outputs, labels)
+        return ce + 0.6 * penalty
+
     optimizer = optim.Adam(model.parameters(), lr=0.0003, weight_decay=5e-5)
 
     X_val_tensor = torch.tensor(X_test_reduced, dtype=torch.float32)
@@ -203,16 +261,8 @@ def train_pipeline():
     val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
     val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
 
-    num_epochs = 100
+    num_epochs = 150
 
-    # === WARM-UP + COSINE WARM RESTARTS ===
-    # Giai đoạn Warm-up (5 epoch đầu):
-    #   LR tăng dần từ 1% → 100% (0.000003 → 0.0003)
-    #   → Khi trọng số còn random, bước đi cực nhỏ để "dò đường" an toàn
-    # Sau Warm-up:
-    #   CosineAnnealingWarmRestarts: LR giảm cosin rồi "restart" nhảy lên
-    #   T_0=25 epoch → T_mult=2 (chu kỳ: 25 → 50 → 100 → ...)
-    #   → Thoát Local Minima, khám phá vùng mới
     WARMUP_EPOCHS = 5
     warmup_scheduler = optim.lr_scheduler.LinearLR(
         optimizer, start_factor=0.01, end_factor=1.0, total_iters=WARMUP_EPOCHS
@@ -226,53 +276,44 @@ def train_pipeline():
         milestones=[WARMUP_EPOCHS],
     )
 
-    save_path = "emotion_mlp_epso_weights.pth"
-    best_acc_path = "emotion_mlp_best_acc_weights.pth"
-    # patience=50: chịu đựng 50 epoch không cải thiện mới dừng (đủ thời gian cho warm restarts)
+    # Lưu trọng số riêng theo dataset
+    save_path = os.path.join(BACKEND_DIR, f"emotion_mlp_epso_weights_{ds_suffix}.pth")
+    best_acc_path = os.path.join(BACKEND_DIR, f"emotion_mlp_best_acc_weights_{ds_suffix}.pth")
+    # Cũng lưu thêm bản copy default nếu là new_data (để pipeline.py vẫn hoạt động)
+    default_save_path = os.path.join(BACKEND_DIR, "emotion_mlp_epso_weights.pth")
+
     early_stopping = EarlyStopping(
         patience=30, verbose=True, delta=0.0005, path=save_path, device=device
     )
     best_val_acc = 0.0
 
-    # === CURRICULUM LEARNING: 3 Giai đoạn ===
-    # Giai đoạn 1 (Epoch 1-50):  CLEAN - Không nhiễu, không Mixup
-    #   → Model học "sườn bài" trên dữ liệu sạch với bước đi nhỏ, cẩn thận
-    # Giai đoạn 2 (Epoch 51-150): LIGHT - Nhiễu nhẹ + Mixup nhẹ
-    #   → Bắt đầu "đeo tạ nhẹ" để tăng tổng quát hóa
-    # Giai đoạn 3 (Epoch 151+):  FULL - Nhiễu + Mixup đầy đủ
-    #   → "Đeo tạ nặng" rèn luyện khả năng chống overfitting
-
-    PHASE_1_END = 30  # Kết thúc giai đoạn Clean
-    PHASE_2_END = 60  # Kết thúc giai đoạn Light
-
-    current_phase = 0  # Theo dõi giai đoạn hiện tại
+    PHASE_1_END = 40
+    PHASE_2_END = 90
+    current_phase = 0
 
     for epoch in range(num_epochs):
-        # --- Xác định giai đoạn Curriculum ---
         if epoch < PHASE_1_END:
-            alpha = 0.0  # Không Mixup
-            noise_level = 0.0  # Không nhiễu
+            alpha = 0.0
+            noise_level = 0.0
             phase_name = "🧹 CLEAN (Không nhiễu, không Mixup)"
             new_phase = 1
         elif epoch < PHASE_2_END:
-            alpha = 0.1  # Mixup nhẹ
-            noise_level = 0.005  # Nhiễu nhẹ
+            alpha = 0.1
+            noise_level = 0.005
             phase_name = "🏋️ LIGHT (Nhiễu nhẹ + Mixup nhẹ)"
             new_phase = 2
         else:
-            alpha = 0.2  # Mixup mạnh
-            noise_level = 0.01  # Nhiễu chuẩn
+            alpha = 0.2
+            noise_level = 0.01
             phase_name = "💪 FULL (Nhiễu + Mixup mạnh)"
             new_phase = 3
 
-        # Reset EarlyStopping khi chuyển giai đoạn
         if new_phase != current_phase:
             current_phase = new_phase
             print(f"\n{'='*60}")
             print(f"  CURRICULUM PHASE {current_phase}: {phase_name}")
             print(f"  Alpha={alpha}, Noise={noise_level}")
             print(f"{'='*60}\n")
-            # Reset early stopping khi chuyển phase để cho model cơ hội thích nghi
             early_stopping = EarlyStopping(
                 patience=50, verbose=True, delta=0.0005, path=save_path, device=device
             )
@@ -286,11 +327,9 @@ def train_pipeline():
             features = features.to(device)
             labels = labels.to(device)
 
-            # Thêm nhiễu Gaussian (nếu có)
             if noise_level > 0:
                 features = features + torch.randn_like(features) * noise_level
 
-            # Mixup (nếu có)
             if alpha > 0:
                 lam = np.random.beta(alpha, alpha)
                 batch_size = features.size(0)
@@ -319,8 +358,6 @@ def train_pipeline():
 
             optimizer.zero_grad()
             loss.backward()
-            # Gradient Clipping: giới hạn bước đi tối đa, ngăn model "chạy bạo"
-            # → Buộc model di chuyển từng bước nhỏ, cẩn thận hơn
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
@@ -358,7 +395,6 @@ def train_pipeline():
             f"LR: {optimizer.param_groups[0]['lr']:.6f}"
         )
 
-        # Lưu model tốt nhất theo Val Acc (riêng biệt)
         if epoch_val_acc > best_val_acc:
             best_val_acc = epoch_val_acc
             torch.save(model.state_dict(), best_acc_path)
@@ -368,12 +404,9 @@ def train_pipeline():
 
         early_stopping(epoch_val_loss, model)
         if early_stopping.early_stop:
-            print(
-                "Đã kích hoạt Early Stopping! Dừng huấn luyện sớm để tránh overfitting."
-            )
+            print("Đã kích hoạt Early Stopping! Dừng huấn luyện sớm để tránh overfitting.")
             break
 
-    # Nạp model tốt nhất theo accuracy (ưu tiên) hoặc theo val_loss
     if os.path.exists(best_acc_path):
         model.load_state_dict(
             torch.load(best_acc_path, map_location=device, weights_only=True)
@@ -381,10 +414,11 @@ def train_pipeline():
         print(
             f"\n[Hoàn tất] Đã nạp lại trọng số MLP tốt nhất theo Val Acc ({best_val_acc:.2f}%) từ: {best_acc_path}"
         )
-        # Copy sang file chính để pipeline.py dùng
-        import shutil
-
         shutil.copy(best_acc_path, save_path)
+        # Nếu train trên new_data, cũng copy sang file default cho pipeline.py
+        if ds_suffix == "new_data":
+            shutil.copy(best_acc_path, default_save_path)
+            print(f"  >> Đã copy trọng số default cho pipeline: {default_save_path}")
 
     print("\n=== BƯỚC 4: ĐÁNH GIÁ MÔ HÌNH CHUYÊN SÂU TRÊN TẬP TEST CHƯA TỪNG HỌC ===")
 
@@ -414,7 +448,7 @@ def train_pipeline():
     all_preds = np.array(all_preds)
     all_probs = np.array(all_probs)
 
-    output_dir = os.path.join(os.path.dirname(__file__), "output")
+    output_dir = os.path.join(BACKEND_DIR, "output")
     os.makedirs(output_dir, exist_ok=True)
 
     accuracy = accuracy_score(all_labels, all_preds)
@@ -426,18 +460,18 @@ def train_pipeline():
         roc_auc = roc_auc_score(
             all_labels, all_probs, multi_class="ovr", average="macro"
         )
-    except Exception as e:
+    except Exception:
         roc_auc = float("nan")
 
     classes_names = [k for k in sorted(label_to_idx, key=label_to_idx.get)]
+    all_class_indices = list(range(num_classes))
     report_dict = classification_report(
-        all_labels, all_preds, target_names=classes_names, output_dict=True, zero_division=0
+        all_labels, all_preds, labels=all_class_indices, target_names=classes_names, output_dict=True, zero_division=0
     )
     report_text = classification_report(
-        all_labels, all_preds, target_names=classes_names, zero_division=0
+        all_labels, all_preds, labels=all_class_indices, target_names=classes_names, zero_division=0
     )
-
-    cm = confusion_matrix(all_labels, all_preds)
+    cm = confusion_matrix(all_labels, all_preds, labels=all_class_indices)
 
     print(f"Accuracy:          {accuracy:.4f} ({(accuracy*100):.2f}%)")
     print(f"Precision (Macro): {precision:.4f} ({(precision*100):.2f}%)")
@@ -445,7 +479,6 @@ def train_pipeline():
     print(f"F1-Score (Macro):  {f1:.4f} ({(f1*100):.2f}%)")
     print(f"ROC-AUC (Macro):   {roc_auc:.4f} ({(roc_auc*100):.2f}%)")
 
-    # 1. Lưu metrics.json vào output/
     metrics_data = {
         "accuracy": float(accuracy),
         "precision_macro": float(precision),
@@ -457,9 +490,7 @@ def train_pipeline():
     metrics_json_path = os.path.join(output_dir, "metrics.json")
     with open(metrics_json_path, "w", encoding="utf-8") as f:
         json.dump(metrics_data, f, indent=4, ensure_ascii=False)
-    print(f"\n[Thành công] Đã lưu chỉ số đánh giá JSON tại: {metrics_json_path}")
 
-    # 2. Lưu evaluation_summary.txt vào output/
     summary_txt_path = os.path.join(output_dir, "evaluation_summary.txt")
     with open(summary_txt_path, "w", encoding="utf-8") as f:
         f.write("=== KẾT QUẢ ĐÁNH GIÁ MÔ HÌNH (EVALUATION METRICS) ===\n\n")
@@ -477,15 +508,11 @@ def train_pipeline():
         for i, row_label in enumerate(classes_names):
             row_str = f"{row_label:<{col_width}}" + "".join(f"{val:>{col_width}}" for val in cm[i])
             f.write(row_str + "\n")
-    print(f"[Thành công] Đã lưu báo cáo đánh giá TXT tại: {summary_txt_path}")
 
-    # 3. Lưu confusion_matrix.csv vào output/
     cm_df = pd.DataFrame(cm, index=classes_names, columns=classes_names)
     cm_csv_path = os.path.join(output_dir, "confusion_matrix.csv")
     cm_df.to_csv(cm_csv_path)
-    print(f"[Thành công] Đã lưu Confusion Matrix CSV tại: {cm_csv_path}")
 
-    # 4. Lưu đồ thị confusion_matrix.png vào output/
     try:
         plt.figure(figsize=(10, 8))
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=classes_names)
@@ -495,10 +522,28 @@ def train_pipeline():
         plot_path = os.path.join(output_dir, "confusion_matrix.png")
         plt.savefig(plot_path, dpi=300)
         plt.close()
-        print(f"[Thành công] Đã vẽ và lưu đồ thị Confusion Matrix tại: {plot_path}")
     except Exception as e:
         print(f"[Lỗi] Không thể vẽ đồ thị Confusion Matrix: {e}")
 
+    if run_benchmark_after:
+        print("\n=== BƯỚC 5: TỰ ĐỘNG CHẠY BENCHMARK ĐÁNH GIÁ TRÊN TẤT CẢ DATASETS ===")
+        from evaluation.benchmark import MultiDatasetBenchmark
+        try:
+            weights_file = f"emotion_mlp_epso_weights_{ds_suffix}.pth"
+            mask_file = os.path.basename(epso_mask_path)
+            benchmarks = MultiDatasetBenchmark(
+                model_weights_path=weights_file,
+                epso_mask_path=mask_file
+            )
+            benchmarks.run_benchmark_suite(dataset_names=dataset_names)
+        except Exception as e:
+            print(f"[Lỗi Benchmark] {e}")
+
 
 if __name__ == "__main__":
-    train_pipeline()
+    import argparse
+    parser = argparse.ArgumentParser(description="Multi-Dataset EPSO MLP Emotion Classifier Training")
+    parser.add_argument("--datasets", nargs="+", default=["new_data"], help="Danh sách dataset dùng huấn luyện")
+    args = parser.parse_args()
+
+    train_pipeline(dataset_names=args.datasets)

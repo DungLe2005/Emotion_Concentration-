@@ -2,6 +2,7 @@
 # Python - Environment, Cache, and Build Files
 # =========================================================================
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -31,11 +32,14 @@ env/
 ENV/
 env.bak/
 venv.bak/
+**/venv/
+**/.venv/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
+*/.ipynb_checkpoints/*
 
-# pytest and coverage
+# pytest, coverage and testing
 .pytest_cache/
 .tox/
 .coverage
@@ -43,13 +47,12 @@ venv.bak/
 nosetests.xml
 coverage.xml
 *.cover
-*.log
 
 # =========================================================================
 # Node / Frontend - Dependencies and Build Outputs
 # =========================================================================
 node_modules/
-frontend/node_modules/
+**/node_modules/
 frontend/dist/
 frontend/dist-ssr/
 frontend/local.properties
@@ -64,34 +67,72 @@ lerna-debug.log*
 
 # Environment files
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
 *.env
 
 # =========================================================================
-# Project-Specific Generated Directories & Outputs
+# Datasets & Raw / Processed Image Folders
 # =========================================================================
-# Generated report and temporary render folders
+data/
+**/dataset/
+**/datasets/
+KMU-FED/
+RAF_DB/
+new_data/
+backend/dataset/
+
+# =========================================================================
+# Media & Video Recordings (Webcam sessions, benchmark recordings)
+# =========================================================================
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.flv
+*.docx
+
+# =========================================================================
+# Feature Caches, Arrays & MediaPipe Bundles
+# =========================================================================
+*.npz
+*.npy
+*.task
+backend/features/
+**/features/
+
+# =========================================================================
+# Model Weights & Trained Checkpoints (PyTorch, ONNX, XGBoost, etc.)
+# =========================================================================
+*.pth
+*.pt
+*.npz
+*.npy
+*.pkl
+*.json
+*.onnx
+*.pb
+*.h5
+*.bin
+*.pkl
+*.joblib
+*.weights
+backend/xgboost_model.json
+*xgboost_model*.json
+
+
+# =========================================================================
+# Runtime Session Logs, History & Generated Reports
+# =========================================================================
+backend/output/
+backend/reports/
+**/output/
+**/reports/
 tmp_render/
 rendered_report/
-
-# Backend runtime output and generated files
-backend/output/
-
-# Dataset folders (uncomment if you want to ignore all local datasets)
-
-data/
-# data/Train/
-# data/Test/
-# data/cropped_faces/
-# data/extracted_features/
-
-# Large Model Weights (uncomment if you do not want to track weights in git)
-# *.pth
-# *.onnx
-# *.pb
+backend/sessions_history.json
+*sessions_history*.json
 
 # =========================================================================
 # Operating System & IDE Files
@@ -112,8 +153,13 @@ ehthumbs_vista.db
 *.msm
 *.msp
 
-# Office lock files
+# Office & Editor Temporary / Lock / Backup Files
+~$*
 .~lock.*
+*.tmp
+*.bak
+*~
+*.sw?
 
 # IDEs and Editors
 .vscode/
@@ -123,6 +169,3 @@ ehthumbs_vista.db
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?
-*.bak
-*~

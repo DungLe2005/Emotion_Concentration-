@@ -8,15 +8,15 @@ export default {
   theme: {
     extend: {
       colors: {
-        dark: '#121212',
-        darkSurface: '#1e1e1e',
-        light: '#f8fafc',
-        lightSurface: '#ffffff',
-        accent: '#3b82f6',
-        accentMint: '#10b981',
+        darkBg: '#090d16',
+        darkCard: '#0f172a',
+        accentCyan: '#06b6d4',
+        accentViolet: '#8b5cf6',
+        accentEmerald: '#10b981',
       },
       fontFamily: {
-        sans: ['Inter', 'sans-serif'],
+        heading: ['Outfit', 'sans-serif'],
+        sans: ['Plus Jakarta Sans', 'sans-serif'],
       }
     },
   },

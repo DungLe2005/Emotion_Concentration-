@@ -1,25 +1,16 @@
-import React, { useState, useEffect } from 'react';
-import { Moon, Sun, Upload, Camera, Activity, BrainCircuit } from 'lucide-react';
+import React, { useState } from 'react';
+import { Upload, Camera, BrainCircuit, MonitorPlay, Layers, Sparkles, Cpu, Activity, Clock, Users, Zap, AlertTriangle, Square, Award, BarChart3, TrendingUp } from 'lucide-react';
 import PipelineVisualizer from './components/PipelineVisualizer';
 import LogConsole from './components/LogConsole';
+import SessionDashboard from './components/SessionDashboard';
 
 function App() {
-  const [darkMode, setDarkMode] = useState(false);
+  const [activeTab, setActiveTab] = useState('session'); // 'session' | 'frame'
   const [logs, setLogs] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [result, setResult] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
-
-  useEffect(() => {
-    if (darkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }, [darkMode]);
-
-  const toggleTheme = () => setDarkMode(!darkMode);
 
   const handleFileChange = (e) => {
     const file = e.target.files[0];
@@ -56,7 +47,6 @@ function App() {
     setLogs([]);
     setResult(null);
 
-    // Log khởi tạo
     setLogs([{
       time: new Date().toLocaleTimeString(),
       stage: 'Image Decoding',
@@ -69,7 +59,7 @@ function App() {
       const formData = new FormData();
       formData.append('file', selectedFile);
 
-      const response = await fetch('http://localhost:8000/analyze_emotion', {
+      const response = await fetch('http://localhost:8000/analyze_single_frame', {
         method: 'POST',
         body: formData,
       });
@@ -84,7 +74,6 @@ function App() {
         throw new Error(data.error);
       }
 
-      // Giả lập hiển thị tuần tự từng bước xử lý cho sinh động
       let currentLogIndex = 0;
       const backendLogs = data.logs || [];
 
@@ -104,7 +93,7 @@ function App() {
             });
             currentLogIndex++;
             runLogSimulation();
-          }, 400); // Trễ 400ms giữa mỗi block để tăng tính trải nghiệm
+          }, 300);
         } else {
           setIsProcessing(false);
           setResult({
@@ -131,179 +120,174 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-light dark:bg-dark text-dark dark:text-light font-sans transition-colors duration-300">
-      {/* Header */}
-      <header className="flex items-center justify-between px-8 py-4 bg-lightSurface dark:bg-darkSurface shadow-sm">
+    <div className="min-h-screen bg-[#f8fafc] text-slate-800 antialiased font-sans">
+      
+      {/* Top Enterprise Header */}
+      <header className="sticky top-0 z-30 bg-white border-b border-slate-200/80 px-8 py-3.5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-sm">
         <div className="flex items-center gap-3">
-          <BrainCircuit className="text-accent w-8 h-8" />
-          <h1 className="text-xl font-semibold tracking-wide">EduFocus AI</h1>
+          <div className="p-2 rounded-xl bg-blue-600 text-white shadow-sm">
+            <BrainCircuit className="w-6 h-6" />
+          </div>
+          <div>
+            <h1 className="text-xl font-extrabold font-heading text-slate-900 tracking-tight flex items-center gap-2">
+              EduFocus AI
+            </h1>
+            <p className="text-xs text-slate-500 font-medium">Hệ Thống Phân Tích Cảm Xúc & Độ Tập Trung Học Sinh</p>
+          </div>
         </div>
-        <button 
-          onClick={toggleTheme}
-          className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors"
-        >
-          {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-        </button>
+
+        {/* Tab Switcher */}
+        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-slate-100 border border-slate-200">
+          <button
+            onClick={() => setActiveTab('session')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold font-heading transition-all ${
+              activeTab === 'session'
+                ? 'bg-white text-blue-600 shadow-sm border border-slate-200'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <MonitorPlay className="w-4 h-4 text-blue-600" />
+            Dashboard Buổi Học
+          </button>
+
+          <button
+            onClick={() => setActiveTab('frame')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold font-heading transition-all ${
+              activeTab === 'frame'
+                ? 'bg-white text-blue-600 shadow-sm border border-slate-200'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Layers className="w-4 h-4 text-blue-600" />
+            Phân Tích Khung Hình Đơn
+          </button>
+        </div>
       </header>
 
-      {/* Main Content */}
-      <main className="p-8 max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
-        
-        {/* Left Column: Input & Results */}
-        <div className="lg:col-span-1 space-y-6">
-          <div className="bg-lightSurface dark:bg-darkSurface rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-800">
-            <h2 className="text-lg font-medium mb-4 flex items-center gap-2">
-              <Upload className="w-5 h-5 text-accent" />
-              Input Source
-            </h2>
-            
-            <div 
-              className="border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-xl p-8 flex flex-col items-center justify-center text-gray-500 hover:border-accent dark:hover:border-accent cursor-pointer transition-colors relative overflow-hidden h-48" 
-              onClick={() => document.getElementById('fileInput').click()}
-              onDragOver={handleDragOver}
-              onDrop={handleDrop}
-            >
-              <input 
-                type="file" 
-                accept="image/*" 
-                className="hidden" 
-                id="fileInput" 
-                onChange={handleFileChange} 
-              />
-              {previewUrl ? (
-                <img 
-                  src={previewUrl} 
-                  alt="Preview" 
-                  className="absolute inset-0 w-full h-full object-cover"
-                />
-              ) : (
-                <>
-                  <Camera className="w-10 h-10 mb-3 text-gray-400" />
-                  <p className="text-sm font-medium">Click to upload image</p>
-                  <p className="text-xs mt-1">or drag and drop</p>
-                </>
-              )}
-            </div>
-            
-            <button 
-              onClick={analyzeImage}
-              disabled={isProcessing || !selectedFile}
-              className="w-full mt-4 py-3 rounded-xl bg-accent hover:bg-blue-600 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isProcessing ? 'Processing...' : 'Analyze Now'}
-            </button>
-          </div>
-
-          {result && (
-            <div className="space-y-6 animate-fade-in">
-              {/* Overall result card */}
-              <div className="bg-lightSurface dark:bg-darkSurface rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-800">
-                <h2 className="text-lg font-medium mb-4 flex items-center gap-2">
-                  <Activity className="w-5 h-5 text-accentMint" />
-                  Overall Result
+      {/* Main Page Content */}
+      <main className="p-6 md:p-8 max-w-7xl mx-auto space-y-6">
+        {activeTab === 'session' ? (
+          <SessionDashboard />
+        ) : (
+          /* Single Frame View */
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-6 space-y-6">
+              <div className="card-clean rounded-2xl p-6 bg-white border border-slate-200 space-y-4">
+                <h2 className="text-base font-bold font-heading text-slate-900 flex items-center gap-2">
+                  <Upload className="w-5 h-5 text-blue-600" />
+                  Nạp Ảnh Single Frame
                 </h2>
                 
-                <div className="text-center py-4">
-                  <div className="text-5xl font-bold text-accentMint mb-2">
-                    {result.concentrationScore}%
-                  </div>
-                  <p className="text-sm text-gray-500 dark:text-gray-400 uppercase tracking-widest font-semibold">
-                    Avg Concentration Level
-                  </p>
+                <div 
+                  className="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-6 flex flex-col items-center justify-center text-slate-500 cursor-pointer transition-all relative overflow-hidden h-48 bg-slate-50/50"
+                  onClick={() => document.getElementById('fileInputSingleTab').click()}
+                  onDragOver={handleDragOver}
+                  onDrop={handleDrop}
+                >
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    className="hidden" 
+                    id="fileInputSingleTab" 
+                    onChange={handleFileChange} 
+                  />
+                  {previewUrl ? (
+                    <img 
+                      src={previewUrl} 
+                      alt="Preview" 
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="text-center space-y-2">
+                      <Camera className="w-8 h-8 text-slate-400 mx-auto" />
+                      <p className="text-xs font-semibold text-slate-700">Click to upload frame</p>
+                    </div>
+                  )}
                 </div>
                 
-                <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Dominant Emotion:</span>
-                    <span className="font-semibold text-accent">{result.emotion}</span>
-                  </div>
-                </div>
+                <button 
+                  onClick={analyzeImage}
+                  disabled={isProcessing || !selectedFile}
+                  className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs tracking-wide uppercase shadow-sm transition-all"
+                >
+                  {isProcessing ? 'Processing Pipeline...' : 'Run Pipeline Inference'}
+                </button>
               </div>
 
-              {/* Detected faces gallery card */}
-              <div className="bg-lightSurface dark:bg-darkSurface rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-800">
-                <h2 className="text-lg font-medium mb-4 flex items-center gap-2">
-                  <BrainCircuit className="w-5 h-5 text-accent" />
-                  Detected Faces ({result.faces?.length || 0})
-                </h2>
+              {result && (
+                <div className="card-clean rounded-2xl p-6 bg-white border border-slate-200 space-y-4">
+                  <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                    <h3 className="text-base font-bold font-heading text-slate-900">
+                      Khuôn Mặt Nhận Diện & Phân Phối Softmax ({result.faces?.length || 0})
+                    </h3>
+                    <span className="text-xs text-blue-600 font-bold bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-100">
+                      TB Tập Trung: {result.concentration}%
+                    </span>
+                  </div>
 
-                <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
-                  {result.faces && result.faces.length > 0 ? (
-                    result.faces.map((face) => (
-                      <div key={face.id} className="flex items-center gap-4 p-3 bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-100 dark:border-gray-800">
-                        {/* Cropped face preview */}
-                        <div className="w-16 h-16 rounded-lg overflow-hidden shrink-0 border border-gray-200 dark:border-gray-700 bg-gray-200 dark:bg-gray-800">
+                  <div className="space-y-4 max-h-[460px] overflow-y-auto pr-1">
+                    {result.faces?.map(face => (
+                      <div key={face.id} className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                        <div className="flex items-center gap-3">
                           <img 
                             src={`data:image/jpeg;base64,${face.image}`} 
-                            alt={`Face ${face.id + 1}`} 
-                            className="w-full h-full object-cover"
+                            className="w-14 h-14 rounded-xl object-cover border border-slate-300 shadow-sm shrink-0" 
+                            alt={`Face ${face.id}`} 
                           />
-                        </div>
-                        
-                        {/* Face details */}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex justify-between items-start">
-                            <h4 className="font-semibold text-sm text-gray-800 dark:text-gray-200">
-                              Face #{face.id + 1}
-                            </h4>
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                              face.concentration >= 70 
-                                ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400' 
-                                : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
-                            }`}>
-                              Focus: {face.concentration}%
-                            </span>
-                          </div>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                            Emotion: <span className="font-semibold text-accent">{face.emotion}</span> ({face.confidence}%)
-                          </p>
-
-                          {/* Phân phối tất cả cảm xúc */}
-                          {face.emotions && face.emotions.length > 0 && (
-                            <div className="mt-2.5 space-y-1 pt-2 border-t border-gray-100 dark:border-gray-800/80">
-                              <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider block mb-1">
-                                Phân phối cảm xúc
+                          <div className="flex-1 min-w-0">
+                            <div className="flex justify-between items-center">
+                              <span className="font-bold text-sm text-slate-900">{face.emotion}</span>
+                              <span className="text-xs font-extrabold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-100">
+                                Tập Trung: {face.concentration}%
                               </span>
-                              {face.emotions.map((item, i) => (
-                                <div key={i} className="flex items-center gap-2 text-[11px]">
-                                  <span className="w-14 truncate font-medium text-gray-600 dark:text-gray-400">{item.label}</span>
-                                  <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-1 overflow-hidden">
+                            </div>
+                            <p className="text-xs text-slate-500 mt-1">Độ tin cậy AI (Top-1 Softmax): {face.confidence}%</p>
+                          </div>
+                        </div>
+
+                        {/* Phân Phối Xác Suất Softmax 7 Cảm Xúc */}
+                        {face.emotions && face.emotions.length > 0 && (
+                          <div className="pt-2.5 border-t border-slate-200/80 space-y-2">
+                            <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">
+                              Bảng Phân Phối Xác Suất Softmax (7 Cảm Xúc)
+                            </span>
+                            <div className="grid grid-cols-1 gap-1.5">
+                              {face.emotions.map(item => (
+                                <div key={item.label} className="space-y-0.5">
+                                  <div className="flex justify-between text-[11px] font-medium text-slate-600">
+                                    <span>{item.label}</span>
+                                    <span className="font-mono font-bold text-slate-800">{item.score}%</span>
+                                  </div>
+                                  <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
                                     <div 
-                                      className={`h-full rounded-full transition-all duration-500 ${
-                                        i === 0 ? 'bg-accent' : 'bg-gray-300 dark:bg-gray-700'
-                                      }`} 
+                                      className="bg-blue-600 h-full rounded-full transition-all duration-300"
                                       style={{ width: `${item.score}%` }}
                                     />
                                   </div>
-                                  <span className="w-8 text-right text-gray-500 dark:text-gray-400 font-semibold">{item.score}%</span>
                                 </div>
                               ))}
                             </div>
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </div>
-                    ))
-                  ) : (
-                    <p className="text-sm text-gray-500 text-center py-4">No faces processed.</p>
-                  )}
+                    ))}
+                  </div>
                 </div>
+              )}
+            </div>
+
+            <div className="lg:col-span-6 space-y-6">
+              <div className="card-clean rounded-2xl p-6 bg-white border border-slate-200">
+                <h2 className="text-base font-bold font-heading mb-4 text-slate-900">AI Architecture Pipeline Status</h2>
+                <PipelineVisualizer logs={logs} isProcessing={isProcessing} />
+              </div>
+
+              <div className="card-clean rounded-2xl bg-white border border-slate-200 h-64 flex flex-col overflow-hidden">
+                <LogConsole logs={logs} />
               </div>
             </div>
-          )}
-        </div>
-
-        {/* Right Column: Pipeline & Logs */}
-        <div className="lg:col-span-2 flex flex-col gap-6">
-          <div className="bg-lightSurface dark:bg-darkSurface rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-800 flex-1">
-            <h2 className="text-lg font-medium mb-6">AI Pipeline Status</h2>
-            <PipelineVisualizer logs={logs} isProcessing={isProcessing} />
           </div>
-          
-          <div className="bg-lightSurface dark:bg-darkSurface rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 h-64 flex flex-col overflow-hidden">
-            <LogConsole logs={logs} />
-          </div>
-        </div>
-
+        )}
       </main>
     </div>
   );
