@@ -1,0 +1,86 @@
+{
+    "surprise": [
+        "A surprise expression, a photo of a face with raised eyebrows, wide eyes, and a slightly open mouth.",
+        "A surprise expression, a photo of a face with furrowed brows, squinted eyes, and a pursed mouth.",
+        "A surprise expression, a photo of a face with raised eyebrows, squinted eyes, puckered lips, and a clenched jaw.",
+        "A surprise expression, a photo of a face with raised eyebrows, wide eyes, pursed lips, and a slightly open mouth.",
+        "A surprise expression, a photo of a face with raised eyebrows, wide eyes, a slightly open mouth, and a neutral expression.",
+        "A surprise expression, a photo of a face with eyebrows raised, eyes wide open, lips parted, cheeks raised, and nose wrinkles.",
+        "A surprise expression, a photo of a face with raised eyebrows, wide eyes, and slightly open mouth, indicating surprise or shock.",
+        "A surprise expression, a photo of a face with the eyebrows raised, eyes wide open, mouth closed, and cheeks slightly raised.",
+        "A surprise expression, a photo of a face with the eyebrows raised, eyes wide open, mouth open, cheeks raised, and lips parted.",
+        "A surprise expression, a photo of a face with raised eyebrows, closed eyelids, and a slight frown."
+    ],
+    "fear": [
+        "A fear expression, a photo of a face with raised eyebrows, squinted eyes, puckered lips, and clenched jaw.",
+        "A fear expression, a photo of a face with eyebrows raised, eyes wide open, cheeks puffed out, nose wrinkled, lip corners pulled back, and mouth open.",
+        "A fear expression, a photo of a face with the eyes closed, eyebrows raised, lips open, and mouth wide, showing teeth, with the jaw slightly clenched.",
+        "A fear expression, a photo of a face with eyebrows raised, eyes wide open, mouth open, lips parted, cheeks raised, and nose wrinkles.",
+        "A fear expression, a photo of a face with the eyebrows raised, eyes wide open, lips pursed, and cheeks slightly raised.",
+        "A fear expression, a photo of a face with furrowed brows, closed eyes, puffed cheeks, and a pinched nose.",
+        "A fear expression, a photo of a face with furrowed brows, squinted eyes, and a tense jaw.",
+        "A fear expression, a photo of a face with the eyebrows raised, eyes wide open, lips pursed, and jaw clenched, indicating a strong emotional reaction.",
+        "A fear expression, a photo of a face with raised eyebrows, wide eyes, and a slightly open mouth.",
+        "A fear expression, a photo of a face with the eyebrows raised, eyes wide open, cheeks raised, nose wrinkles, lip corners pulled back, mouth open, and jaw dropped."
+    ],
+    "disgust": [
+        "A disgust expression, a photo of a face with furrowed brows, wide eyes, and pursed lips.",
+        "A disgust expression, a photo of a face with the eyebrows raised, eyes closed, lips pursed, and jaw slightly clenched.",
+        "A disgust expression, a photo of a face with slightly raised eyebrows, closed eyelids, and a neutral mouth.",
+        "A disgust expression, a photo of a face with furrowed brows, squinted eyes, and a pursed mouth.",
+        "A disgust expression, a photo of a face with furrowed brows, closed eyes, and a slight frown.",
+        "A disgust expression, a photo of a face with the eyebrows raised, eyes wide open, lips pursed, and cheeks slightly puffed.",
+        "A disgust expression, a photo of a face with the eyebrows raised, eyes squinting, lips pursed, and the corners of the mouth turned down.",
+        "A disgust expression, a photo of a face with the eyebrows raised, eyes closed, and lips pursed, indicating a possible expression of discomfort or concentration.",
+        "A disgust expression, a photo of a face with squinted eyes, raised eyebrows, and a wide smile.",
+        "A disgust expression, a photo of a face with the eyebrows raised, eyes looking to the side, lips slightly pursed, and the mouth closed."
+    ],
+    "happy": [
+        "A happy expression, a photo of a face with a neutral expression, featuring slightly raised eyebrows, closed eyelids, and a neutral mouth.",
+        "A happy expression, a photo of a face with raised eyebrows, wide eyes, a big smile, puffed cheeks, a wrinkled nose, and a relaxed jaw.",
+        "A happy expression, a photo of a face with raised eyebrows, closed eyelids, squinted eyes, puckered lips, and a clenched jaw.",
+        "A happy expression, a photo of a face with raised eyebrows, closed eyelids, wide eyes, puffed cheeks, a wrinkled nose, pulled corners of the mouth, and a slightly open",
+        "A happy expression, a photo of a face with raised eyebrows, closed eyelids, squinted eyes, raised cheekbones, and a slight smile.",
+        "A happy expression, a photo of a face with raised eyebrows, wide eyes, a slight smile, and a relaxed jaw.",
+        "A happy expression, a photo of a face with raised eyebrows, closed eyelids, and a slight frown.",
+        "A happy expression, a photo of a face with a wide smile, eyes crinkled at the corners, and the mouth open, showing teeth.",
+        "A happy expression, a photo of a face with furrowed brows, slightly squinted eyes, and a pursed mouth.",
+        "A happy expression, a photo of a face with a wide smile, eyes squinting slightly, eyebrows raised, cheeks raised, and lips pulled back."
+    ],
+    "sad": [
+        "A sad expression, a photo of a face with eyebrows raised, eyelids closed, eyes squinted, cheeks puffed, nose wrinkled, lip corners pulled back, mouth open, and",
+        "A sad expression, a photo of a face with the eyebrows raised, eyes wide open, lips pursed, and cheeks slightly raised.",
+        "A sad expression, a photo of a face with furrowed brows, drooping eyelids, and a pursed mouth.",
+        "A sad expression, a photo of a face with closed eyes, slightly raised eyebrows, and a neutral expression.",
+        "A sad expression, a photo of a face with closed eyes, raised eyebrows, and a slight frown.",
+        "A sad expression, a photo of a face with furrowed brows, closed eyes, and a pursed mouth.",
+        "A sad expression, a photo of a face with slightly raised eyebrows, closed eyelids, and a neutral mouth.",
+        "A sad expression, a photo of a face with the eyebrows slightly raised, eyes looking downward, cheeks slightly pulled back, and the mouth closed.",
+        "A sad expression, a photo of a face with furrowed brows, closed eyes, puffed cheeks, wrinkled nose, pursed lips, and clenched jaw.",
+        "A sad expression, a photo of a face with furrowed brows, squinted eyes, puckered lips, and a tense jaw."
+    ],
+    "anger": [
+        "A anger expression, a photo of a face with furrowed brows, squinted eyes, puckered lips, and a clenched jaw.",
+        "A anger expression, a photo of a face with the eyebrows raised, eyes wide open, and mouth slightly open.",
+        "A anger expression, a photo of a face with eyebrows raised, eyes wide open, cheeks puffed out, nose wrinkled, lip corners pulled back, and mouth open.",
+        "A anger expression, a photo of a face with the eyebrows raised, eyes wide open, lips pursed, and jaw clenched.",
+        "A anger expression, a photo of a face with furrowed brows, squinted eyes, raised cheekbones, pinched nose, pursed lips, and clenched jaw.",
+        "A anger expression, a photo of a face with a wide, bloodied grin, eyes wide open, and a nose wrinkled in a grimace.",
+        "A anger expression, a photo of a face with furrowed brows, wide eyes, raised cheekbones, and a tense jaw.",
+        "A anger expression, a photo of a face with a neutral expression, no significant muscle movements detected.",
+        "A anger expression, a photo of a face with the mouth open wide, eyes closed, eyebrows raised, and cheeks puffed out, indicating a strong emotional expression.",
+        "A anger expression, a photo of a face with the eyebrows raised, eyes wide open, and lips pursed, indicating a state of surprise or concern."
+    ],
+    "neutral": [
+        "A neutral expression, a photo of a face with the eyebrows raised, eyes wide open, lips pursed, and jaw slightly clenched.",
+        "A neutral expression, a photo of a face with slightly raised eyebrows, closed eyelids, and a neutral mouth.",
+        "A neutral expression, a photo of a face with a neutral expression, eyebrows slightly raised, eyes looking forward, lips closed, and a relaxed jaw.",
+        "A neutral expression, a photo of a face with furrowed brows, slightly raised eyebrows, closed eyes, puffed cheeks, pinched nose, pursed lips, and a clenched jaw",
+        "A neutral expression, a photo of a face with a neutral expression, no significant muscle movements detected.",
+        "A neutral expression, a photo of a face with raised eyebrows, closed eyelids, and a slight frown.",
+        "A neutral expression, a photo of a face with furrowed brows, slightly squinted eyes, and a pursed mouth.",
+        "A neutral expression, a photo of a face with the eyebrows raised, eyes squinted, and lips pursed, indicating a focused or concerned expression.",
+        "A neutral expression, a photo of a face with closed eyes, raised eyebrows, and slightly pursed lips.",
+        "A neutral expression, a photo of a face with raised eyebrows, squinted eyes, puckered lips, and a furrowed nose."
+    ]
+}

@@ -2,42 +2,39 @@ import React from 'react';
 import { CheckCircle2, Circle, Loader2 } from 'lucide-react';
 
 const stages = [
-  { id: 'upload', name: 'Image Decoding' },
-  { id: 'detect', name: 'Face Detection (RetinaFace)' },
-  { id: 'extract', name: 'Feature Extraction (CLIVP-FER)' },
-  { id: 'optimize', name: 'Feature Selection (EPSO)' },
-  { id: 'classify', name: 'Emotion Classification (MLP)' }
+  { id: 'upload', name: '1. Image Decoding & Tight Crop (Giải mã & Alignment 5%)', matchKey: 'Image Decoding' },
+  { id: 'detect', name: '2. Face Detection (RetinaFace TF)', matchKey: 'Face Detection' },
+  { id: 'extract', name: '3. Multimodal 544D (CLIP 512D + Prompt 7D + AU 25D)', matchKey: 'Feature Extraction' },
+  { id: 'optimize', name: '4. EPSO Feature Reduction (544D → 289D)', matchKey: 'Feature Selection' },
+  { id: 'classify', name: '5. Ensemble Classifier (ResMLP + XGBoost)', matchKey: 'Emotion Classification' }
 ];
 
-export default function PipelineVisualizer({ logs, isProcessing }) {
-  const completedStages = logs.map(l => l.stage);
-  const currentStageIndex = isProcessing ? completedStages.length : -1;
-
+export default function PipelineVisualizer({ logs = [], isProcessing }) {
   return (
     <div className="flex flex-col space-y-4 relative">
       {/* Connecting line */}
-      <div className="absolute left-[15px] top-[24px] bottom-[24px] w-0.5 bg-gray-200 dark:bg-gray-800 -z-10" />
+      <div className="absolute left-[15px] top-[24px] bottom-[24px] w-0.5 bg-slate-200 -z-10" />
       
       {stages.map((stage, idx) => {
-        const isCompleted = completedStages.includes(stage.name);
-        const isCurrent = idx === currentStageIndex && isProcessing;
-        const logEntry = logs.find(l => l.stage === stage.name);
+        const logEntry = logs.find(l => l.stage && l.stage.includes(stage.matchKey));
+        const isCompleted = Boolean(logEntry);
+        const isCurrent = !isCompleted && isProcessing && (idx === 0 || logs.some(l => l.stage && l.stage.includes(stages[idx - 1].matchKey)));
 
         return (
           <div key={stage.id} className="flex items-start gap-4">
-            <div className="mt-1 bg-lightSurface dark:bg-darkSurface z-10">
+            <div className="mt-1 bg-white z-10">
               {isCompleted ? (
-                <CheckCircle2 className="w-8 h-8 text-accentMint" />
+                <CheckCircle2 className="w-8 h-8 text-emerald-500" />
               ) : isCurrent ? (
-                <Loader2 className="w-8 h-8 text-accent animate-spin" />
+                <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
               ) : (
-                <Circle className="w-8 h-8 text-gray-300 dark:text-gray-700" />
+                <Circle className="w-8 h-8 text-slate-300" />
               )}
             </div>
             <div className={`flex-1 ${!isCompleted && !isCurrent ? 'opacity-50' : ''}`}>
-              <h3 className={`font-medium ${isCurrent ? 'text-accent' : ''}`}>{stage.name}</h3>
-              <p className="text-sm text-gray-500 h-5">
-                {isCompleted && logEntry ? `Completed in ${logEntry.latency_ms ?? logEntry.latency}ms` : isCurrent ? 'Processing...' : 'Waiting'}
+              <h3 className={`text-sm font-semibold ${isCurrent ? 'text-blue-600' : 'text-slate-800'}`}>{stage.name}</h3>
+              <p className="text-xs text-slate-500 h-5 mt-0.5">
+                {isCompleted && logEntry ? `Hoàn tất trong ${logEntry.latency_ms ?? logEntry.latency ?? 0}ms` : isCurrent ? 'Đang xử lý...' : 'Đang chờ'}
               </p>
             </div>
           </div>
