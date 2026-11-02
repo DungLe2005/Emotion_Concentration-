@@ -15,12 +15,12 @@ STANDARD_LABEL_TO_IDX = {emotion: idx for idx, emotion in enumerate(STANDARD_EMO
 
 DEFAULT_EMOTION_PROMPTS = [
     "a face with an angry expression, furrowed eyebrows and intense glare",  # 0: angry
-    "a face showing disgust, wrinkled nose and raised upper lip",             # 1: disgust
-    "a fearful frightened face with wide eyes and open mouth",                # 2: fear
-    "a happy smiling cheerful face with open smile",                         # 3: happy
-    "a neutral calm relaxed face with a plain expression",                   # 4: neutral
-    "a sad sorrowful face with downturned lips and gloomy eyes",             # 5: sad
-    "a shocked surprised face with raised eyebrows and gasping mouth"        # 6: surprise
+    "a face showing disgust, wrinkled nose and raised upper lip",  # 1: disgust
+    "a fearful frightened face with wide eyes and open mouth",  # 2: fear
+    "a happy smiling cheerful face with open smile",  # 3: happy
+    "a neutral calm relaxed face with a plain expression",  # 4: neutral
+    "a sad sorrowful face with downturned lips and gloomy eyes",  # 5: sad
+    "a shocked surprised face with raised eyebrows and gasping mouth",  # 6: surprise
 ]
 
 
@@ -68,10 +68,14 @@ def get_emotion_centroid_embeddings(
                     centroids.append(centroid)
 
             text_features = torch.cat(centroids, dim=0).float()
-            print(f"[AI Text] 🎯 Đã nạp & tính Centroid Embedding từ '{os.path.basename(desc_path)}' (7 cảm xúc x Action Units, shape {list(text_features.shape)})!")
+            print(
+                f"[AI Text] 🎯 Đã nạp & tính Centroid Embedding từ '{os.path.basename(desc_path)}' (7 cảm xúc x Action Units, shape {list(text_features.shape)})!"
+            )
             return text_features
         except Exception as e:
-            print(f"[AI Text Warning] Lỗi nạp fer_descriptions.json ({e}), chuyển sang prompt mặc định.")
+            print(
+                f"[AI Text Warning] Lỗi nạp fer_descriptions.json ({e}), chuyển sang prompt mặc định."
+            )
 
     # Fallback mặc định
     toks = clip.tokenize(DEFAULT_EMOTION_PROMPTS).to(device)
@@ -137,7 +141,9 @@ class FolderDatasetReader(BaseDatasetReader):
                     continue
 
                 for fname in os.listdir(emo_dir):
-                    if fname.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp")):
+                    if fname.lower().endswith(
+                        (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+                    ):
                         image_paths.append(os.path.join(emo_dir, fname))
                         labels.append(std_idx)
 
@@ -166,7 +172,15 @@ class KMUFEDDatasetReader(BaseDatasetReader):
 
     # Thứ tự sắp xếp cảm xúc và số lượng ảnh tích lũy (khớp CLIVP-FER)
     EMOTION_ORDER = ["AN", "DI", "FE", "HA", "SA", "SU"]
-    SUM_NUMBER = [0, 196, 316, 516, 725, 905, 1104]  # Vị trí bắt đầu tích lũy mỗi cảm xúc
+    SUM_NUMBER = [
+        0,
+        196,
+        316,
+        516,
+        725,
+        905,
+        1104,
+    ]  # Vị trí bắt đầu tích lũy mỗi cảm xúc
     TEST_NUMBER = [19, 12, 20, 21, 18, 20]  # Số ảnh test mỗi fold cho mỗi cảm xúc
 
     def __init__(
@@ -252,7 +266,11 @@ class KMUFEDDatasetReader(BaseDatasetReader):
             for j in range(len(self.TEST_NUMBER)):
                 for k in range(self.TEST_NUMBER[j]):
                     if self.fold != 10:
-                        idx = self.SUM_NUMBER[j] + (self.fold - 1) * self.TEST_NUMBER[j] + k
+                        idx = (
+                            self.SUM_NUMBER[j]
+                            + (self.fold - 1) * self.TEST_NUMBER[j]
+                            + k
+                        )
                     else:
                         idx = self.SUM_NUMBER[j + 1] - 1 - k
                     if idx < total:
@@ -345,7 +363,11 @@ class RAFDBDatasetReader(FolderDatasetReader):
         "7": "neutral",
     }
 
-    def __init__(self, dataset_name: str = "rafdb", root_dir: str = r"d:\Emotion_Concentration\RAF_DB"):
+    def __init__(
+        self,
+        dataset_name: str = "rafdb",
+        root_dir: str = r"d:\Emotion_Concentration\RAF_DB",
+    ):
         dataset_dir = os.path.join(root_dir, "DATASET")
         super().__init__(
             dataset_name=dataset_name,
@@ -367,7 +389,9 @@ class DatasetRegistry:
         name_clean = name.lower()
         if name_clean in cls._registry:
             return cls._registry[name_clean]
-        raise ValueError(f"Bộ dữ liệu '{name}' chưa được đăng ký trong DatasetRegistry!")
+        raise ValueError(
+            f"Bộ dữ liệu '{name}' chưa được đăng ký trong DatasetRegistry!"
+        )
 
     @classmethod
     def list_datasets(cls) -> List[str]:

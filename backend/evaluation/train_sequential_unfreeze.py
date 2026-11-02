@@ -374,11 +374,12 @@ class SequentialUnfreezeTrainer:
                 f"Phase 2: Deep Visual Joint Optimization (Epoch {p1_limit + 1}..{self.total_epochs}) [Blocks 8-11, LLRD, Text Khóa]",
             )
 
-    def update_phase(self, epoch: int):
+    def update_phase(self, epoch: int) -> bool:
         new_phase, phase_desc = self.get_phase_info(epoch)
         if new_phase == self.current_phase and self.optimizer is not None:
-            return
+            return False
 
+        old_phase = self.current_phase
         self.current_phase = new_phase
         print(f"\n{'='*70}")
         print(f"🔄 CHUYỂN GIAI ĐOẠN [Epoch {epoch}/{self.total_epochs}]: {phase_desc}")
@@ -495,6 +496,7 @@ class SequentialUnfreezeTrainer:
         print(
             f"  -> Số nhóm tham số trong Optimizer: {len(self.optimizer.param_groups)} (Bảo toàn 100% Momentum)"
         )
+        return True
 
 
 def run_training(args):
@@ -646,7 +648,13 @@ def run_training(args):
     )
 
     for epoch in range(start_epoch, args.epochs + 1):
-        trainer.update_phase(epoch)
+        phase_changed = trainer.update_phase(epoch)
+        if phase_changed and epoch > start_epoch:
+            print(
+                f"  🔄 [Giải Pháp 2] Chuyển sang Phase {trainer.current_phase}: ĐÃ RESET Early Stopping counter (no_improve_epochs = 0) để Phase {trainer.current_phase} có đủ thời gian thích nghi!"
+            )
+            no_improve_epochs = 0
+
         model.train()
 
         running_loss = 0.0
@@ -847,8 +855,8 @@ def main():
     parser.add_argument(
         "--patience",
         type=int,
-        default=15,
-        help="Số epochs không cải thiện trước khi Early Stopping (Mặc định: 15, 0 để tắt)",
+        default=20,
+        help="Số epochs không cải thiện trước khi Early Stopping (Mặc định: 20, 0 để tắt)",
     )
     parser.add_argument(
         "--batch_size",

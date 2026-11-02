@@ -54,8 +54,8 @@ def main():
     parser.add_argument(
         "--patience",
         type=int,
-        default=15,
-        help="Số epochs không cải thiện trước khi Early Stopping (Mặc định: 15)",
+        default=20,
+        help="Số epochs không cải thiện trước khi Early Stopping (Mặc định: 20)",
     )
     parser.add_argument(
         "--batch_size", type=int, default=16, help="Batch size (Mặc định: 16)"

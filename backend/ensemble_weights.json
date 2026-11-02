@@ -1,9 +1,19 @@
 {
   "weights": [
-    0.2,
-    0.2,
-    0.6
+    0.0,
+    0.25,
+    0.75
   ],
+  "third_model": "mlp",
+  "third_name": "EmotionMLP",
   "dataset": "new_data",
-  "accuracy": 0.8618892508143322
+  "accuracy": 0.8592833876221498,
+  "macro_f1": 0.7825246403058909,
+  "models_evaluated": {
+    "mlp_acc": 0.8592833876221498,
+    "svm_acc": 0.8586319218241042,
+    "resmlp_acc": 0.8592833876221498,
+    "xgboost_acc": 0.8592833876221498,
+    "ensemble_acc": 0.8592833876221498
+  }
 }
