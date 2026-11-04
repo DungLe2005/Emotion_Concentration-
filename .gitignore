@@ -91,6 +91,7 @@ new_data/
 *.webm
 *.flv
 *.docx
+.t
 
 # =========================================================================
 # Feature Caches, Arrays & MediaPipe Bundles

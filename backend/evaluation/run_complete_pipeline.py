@@ -3,12 +3,16 @@ import os
 import time
 import argparse
 import numpy as np
-import torch
 
 # Thiết lập đường dẫn backend
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
+
+# Cấu hình cache an toàn cho matplotlib trên Windows
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(BACKEND_DIR, ".tmp_mpl"))
+
+import torch
 
 from dataset.dataset_loader import DatasetRegistry
 from dataset.dataset_preprocessor import MultiDatasetPreprocessor
@@ -79,7 +83,19 @@ def main():
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Tiếp tục huấn luyện từ checkpoint gần nhất nếu có",
+        help="Bật chế độ tiếp tục huấn luyện (resume) từ checkpoint trong folder resume",
+    )
+    parser.add_argument(
+        "--resume_dir",
+        type=str,
+        default=None,
+        help="Đường dẫn thư mục chứa checkpoint resume (Mặc định: folder 'resume' ở root)",
+    )
+    parser.add_argument(
+        "--resume_file",
+        type=str,
+        default=None,
+        help="Tên file checkpoint cụ thể trong folder resume để nạp",
     )
     args = parser.parse_args()
 
@@ -93,6 +109,10 @@ def main():
     print(f"  - Chế Độ Dry-run: {args.dry_run}")
     print(f"  - Bỏ Qua Unfreeze: {args.skip_unfreeze}")
     print(f"  - Tiếp Tục (Resume): {args.resume}")
+    if args.resume_dir:
+        print(f"  - Thư Mục Resume: {args.resume_dir}")
+    if args.resume_file:
+        print(f"  - Checkpoint File: {args.resume_file}")
 
     # BƯỚC 1: HUẤN LUYỆN RÃ BĂNG TUẦN TỰ (100 EPOCHS)
     if not args.skip_unfreeze:
@@ -118,6 +138,10 @@ def main():
             cmd_unfreeze.append("--dry_run")
         if args.resume:
             cmd_unfreeze.append("--resume")
+        if args.resume_dir:
+            cmd_unfreeze.extend(["--resume_dir", args.resume_dir])
+        if args.resume_file:
+            cmd_unfreeze.extend(["--resume_file", args.resume_file])
         run_step(
             "1. Huấn Luyện Rã Băng Tuần Tự (CLIP Visual Top-4 + Projections + ResMLP Head)",
             cmd_unfreeze,

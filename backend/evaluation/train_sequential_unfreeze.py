@@ -5,7 +5,13 @@ import json
 import argparse
 import numpy as np
 from PIL import Image
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+
+# Cấu hình cache an toàn cho matplotlib trên Windows
+os.environ.setdefault(
+    "MPLCONFIGDIR",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".tmp_mpl"),
+)
 
 import torch
 import torch.nn as nn
@@ -444,45 +450,109 @@ class SequentialUnfreezeTrainer:
                     param.requires_grad = True
                     vis_top2.append(param)
 
-            # Cập nhật LR của Adapter hiện có mà KHÔNG xóa trạng thái momentum
-            for g in self.optimizer.param_groups:
-                if g.get("name") == "adapter":
-                    g["lr"] = 2e-4
-
-            # Thêm nhóm tham số Visual Top-2 vào optimizer hiện hành
-            self.optimizer.add_param_group(
-                {
-                    "params": vis_top2,
-                    "lr": 3e-5,
-                    "weight_decay": 1e-2,
-                    "name": "vis_top2",
-                }
+            adapter_params = (
+                list(head_m.parameters())
+                + list(self.model.visual_proj.parameters())
+                + list(self.model.facial_cross_attn.parameters())
             )
+
+            if self.optimizer is None:
+                # Khởi tạo an toàn khi resume trực tiếp ở Phase 1
+                self.optimizer = optim.AdamW(
+                    [
+                        {
+                            "params": adapter_params,
+                            "lr": 2e-4,
+                            "weight_decay": 1e-4,
+                            "name": "adapter",
+                        },
+                        {
+                            "params": vis_top2,
+                            "lr": 3e-5,
+                            "weight_decay": 1e-2,
+                            "name": "vis_top2",
+                        },
+                    ]
+                )
+            else:
+                # Cập nhật LR của Adapter hiện có mà KHÔNG xóa trạng thái momentum
+                for g in self.optimizer.param_groups:
+                    if g.get("name") == "adapter":
+                        g["lr"] = 2e-4
+
+                # Thêm nhóm tham số Visual Top-2 vào optimizer hiện hành
+                self.optimizer.add_param_group(
+                    {
+                        "params": vis_top2,
+                        "lr": 3e-5,
+                        "weight_decay": 1e-2,
+                        "name": "vis_top2",
+                    }
+                )
             self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=p1_limit - p0_limit, eta_min=2e-6
+                self.optimizer, T_max=max(1, p1_limit - p0_limit), eta_min=2e-6
             )
 
         else:
             # Phase 2: Mở rộng Visual Blocks 8, 9 với Layer-wise LR Decay (LLRD) và duy trì LR tối ưu
+            vis_top2 = []
+            for name, param in clip_m.visual.named_parameters():
+                if any(
+                    name.startswith(f"transformer.resblocks.{b}.") for b in [10, 11]
+                ) or name in ["proj", "ln_post.weight", "ln_post.bias"]:
+                    param.requires_grad = True
+                    vis_top2.append(param)
+
             vis_mid = []
             for name, param in clip_m.visual.named_parameters():
                 if any(name.startswith(f"transformer.resblocks.{b}.") for b in [8, 9]):
                     param.requires_grad = True
                     vis_mid.append(param)
 
-            # Điều chỉnh LR: Duy trì mức học hiệu quả, không dìm quá sâu để tránh gradient chết
-            for g in self.optimizer.param_groups:
-                if g.get("name") == "adapter":
-                    g["lr"] = 8e-5
-                elif g.get("name") == "vis_top2":
-                    g["lr"] = 1.5e-5
-
-            # Thêm nhóm Blocks 8-9 với LR cân bằng và eta_min hợp lý (1e-6)
-            self.optimizer.add_param_group(
-                {"params": vis_mid, "lr": 5e-6, "weight_decay": 1e-2, "name": "vis_mid"}
+            adapter_params = (
+                list(head_m.parameters())
+                + list(self.model.visual_proj.parameters())
+                + list(self.model.facial_cross_attn.parameters())
             )
+
+            if self.optimizer is None:
+                # Khởi tạo an toàn khi resume trực tiếp ở Phase 2
+                self.optimizer = optim.AdamW(
+                    [
+                        {
+                            "params": adapter_params,
+                            "lr": 8e-5,
+                            "weight_decay": 1e-4,
+                            "name": "adapter",
+                        },
+                        {
+                            "params": vis_top2,
+                            "lr": 1.5e-5,
+                            "weight_decay": 1e-2,
+                            "name": "vis_top2",
+                        },
+                        {
+                            "params": vis_mid,
+                            "lr": 5e-6,
+                            "weight_decay": 1e-2,
+                            "name": "vis_mid",
+                        },
+                    ]
+                )
+            else:
+                # Điều chỉnh LR: Duy trì mức học hiệu quả, không dìm quá sâu để tránh gradient chết
+                for g in self.optimizer.param_groups:
+                    if g.get("name") == "adapter":
+                        g["lr"] = 8e-5
+                    elif g.get("name") == "vis_top2":
+                        g["lr"] = 1.5e-5
+
+                # Thêm nhóm Blocks 8-9 với LR cân bằng và eta_min hợp lý (1e-6)
+                self.optimizer.add_param_group(
+                    {"params": vis_mid, "lr": 5e-6, "weight_decay": 1e-2, "name": "vis_mid"}
+                )
             self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=self.total_epochs - p1_limit, eta_min=1e-6
+                self.optimizer, T_max=max(1, self.total_epochs - p1_limit), eta_min=1e-6
             )
 
         # In thông tin kiểm tra số tham số trainable
@@ -497,6 +567,96 @@ class SequentialUnfreezeTrainer:
             f"  -> Số nhóm tham số trong Optimizer: {len(self.optimizer.param_groups)} (Bảo toàn 100% Momentum)"
         )
         return True
+
+
+def resolve_resume_checkpoint(
+    resume_dir: str = None,
+    resume_file: str = None,
+    fallback_ckpt: str = None,
+) -> Tuple[Optional[str], str]:
+    """
+    Xác định đường dẫn checkpoint hợp lệ từ thư mục resume.
+    Hỗ trợ:
+      - Quét folder resume tìm file checkpoint mới nhất (.pth, .pt, .ckpt, .tar).
+      - Chỉ định trực tiếp tên file qua resume_file.
+      - Fallback tự động sang checkpoint mặc định nếu folder resume trống.
+    Trả về: (checkpoint_path, actual_resume_dir)
+    """
+    root_dir = os.path.abspath(os.path.join(BACKEND_DIR, ".."))
+
+    # 1. Xác định thư mục resume
+    if resume_dir:
+        actual_resume_dir = os.path.abspath(resume_dir)
+    else:
+        candidate_root = os.path.join(root_dir, "resume")
+        candidate_backend = os.path.join(BACKEND_DIR, "resume")
+        if os.path.isdir(candidate_root):
+            actual_resume_dir = candidate_root
+        elif os.path.isdir(candidate_backend):
+            actual_resume_dir = candidate_backend
+        else:
+            actual_resume_dir = candidate_root
+
+    os.makedirs(actual_resume_dir, exist_ok=True)
+
+    # 2. Trường hợp chỉ định file cụ thể qua resume_file
+    if resume_file:
+        candidate_path = (
+            resume_file
+            if os.path.isabs(resume_file)
+            else os.path.join(actual_resume_dir, resume_file)
+        )
+        if os.path.isfile(candidate_path):
+            print(f"  👉 [RESUME] Sử dụng file checkpoint chỉ định: {candidate_path}")
+            return candidate_path, actual_resume_dir
+        else:
+            print(f"  ⚠️ Không tìm thấy file checkpoint chỉ định: {candidate_path}")
+            return None, actual_resume_dir
+
+    # 3. Quét các file checkpoint hợp lệ trong folder resume
+    valid_exts = (".pth", ".pt", ".ckpt", ".tar")
+    ckpt_files = []
+    try:
+        for fname in os.listdir(actual_resume_dir):
+            if fname.endswith(".tmp") or fname.startswith("."):
+                continue
+            if any(fname.lower().endswith(ext) for ext in valid_exts):
+                full_p = os.path.join(actual_resume_dir, fname)
+                if os.path.isfile(full_p):
+                    ckpt_files.append(full_p)
+    except Exception as read_e:
+        print(f"  ⚠️ Lỗi đọc thư mục resume ({read_e})")
+
+    if ckpt_files:
+        # Sắp xếp theo thời gian sửa đổi gần nhất (mtime giảm dần)
+        ckpt_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        print(
+            f"\n📂 [RESUME] Tìm thấy {len(ckpt_files)} checkpoint trong folder: {actual_resume_dir}"
+        )
+        for idx, f in enumerate(ckpt_files[:5]):
+            mtime_str = time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(f))
+            )
+            size_mb = os.path.getsize(f) / (1024 * 1024)
+            print(f"   [{idx + 1}] {os.path.basename(f)} ({size_mb:.1f} MB, cập nhật: {mtime_str})")
+        if len(ckpt_files) > 5:
+            print(f"   ... và {len(ckpt_files) - 5} file khác.")
+
+        chosen_ckpt = ckpt_files[0]
+        print(
+            f"  👉 [RESUME] Đã tự động chọn checkpoint mới nhất: {os.path.basename(chosen_ckpt)}"
+        )
+        return chosen_ckpt, actual_resume_dir
+
+    # 4. Fallback nếu folder resume trống
+    if fallback_ckpt and os.path.isfile(fallback_ckpt):
+        print(f"  ℹ️ Không có file checkpoint nào trong folder '{actual_resume_dir}'.")
+        print(f"  🔄 [FALLBACK] Sử dụng checkpoint tối ưu sẵn có: {fallback_ckpt}")
+        return fallback_ckpt, actual_resume_dir
+
+    print(f"  ⚠️ Thư mục resume hiện đang trống: {actual_resume_dir}")
+    print(f"     Hãy copy file checkpoint (.pth/.pt) vào thư mục trên để tiếp tục huấn luyện.")
+    return None, actual_resume_dir
 
 
 def run_training(args):
@@ -626,22 +786,53 @@ def run_training(args):
     best_ckpt_path = os.path.join(args.save_dir, "sequential_unfreeze_best.pth")
 
     start_epoch = 1
-    if getattr(args, "resume", False) and os.path.exists(best_ckpt_path):
-        try:
-            print(f"  🔄 [RESUME] Đang tải checkpoint tối ưu từ: {best_ckpt_path}...")
-            ckpt = torch.load(best_ckpt_path, map_location=device, weights_only=False)
-            model.load_state_dict(ckpt["model_state_dict"])
-            start_epoch = ckpt.get("epoch", 0) + 1
-            best_val_f1 = ckpt.get("best_val_f1", 0.0)
-            best_val_acc = ckpt.get("best_val_acc", 0.0)
-            history = ckpt.get("history", history)
-            print(
-                f"  ✅ Đã tải checkpoint thành công! Tiếp tục từ Epoch {start_epoch} (Kỷ lục Best Val Macro F1: {best_val_f1:.2f}%)"
-            )
-        except Exception as e:
-            print(
-                f"  ⚠️ Không thể nạp checkpoint resume ({e}), bắt đầu huấn luyện từ đầu."
-            )
+    actual_resume_dir = getattr(args, "resume_dir", None)
+    if not actual_resume_dir:
+        actual_resume_dir = os.path.join(
+            os.path.abspath(os.path.join(BACKEND_DIR, "..")), "resume"
+        )
+    os.makedirs(actual_resume_dir, exist_ok=True)
+
+    loaded_ckpt = None
+    if getattr(args, "resume", False):
+        chosen_ckpt, actual_resume_dir = resolve_resume_checkpoint(
+            resume_dir=getattr(args, "resume_dir", None),
+            resume_file=getattr(args, "resume_file", None),
+            fallback_ckpt=best_ckpt_path,
+        )
+        if chosen_ckpt and os.path.isfile(chosen_ckpt):
+            try:
+                print(f"  🔄 [RESUME] Đang tải checkpoint từ: {chosen_ckpt}...")
+                loaded_ckpt = torch.load(
+                    chosen_ckpt, map_location=device, weights_only=False
+                )
+                if isinstance(loaded_ckpt, dict) and "model_state_dict" in loaded_ckpt:
+                    model.load_state_dict(loaded_ckpt["model_state_dict"], strict=False)
+                    start_epoch = loaded_ckpt.get("epoch", 0) + 1
+                    best_val_f1 = loaded_ckpt.get("best_val_f1", 0.0)
+                    best_val_acc = loaded_ckpt.get("best_val_acc", 0.0)
+                    history = loaded_ckpt.get("history", history)
+                    saved_phase = loaded_ckpt.get("phase", "N/A")
+                    print(
+                        f"  ✅ [RESUME] Đã tải checkpoint thành công!"
+                        f"\n     - Tiếp tục từ Epoch: {start_epoch}"
+                        f"\n     - Giai đoạn đã lưu: Phase {saved_phase}"
+                        f"\n     - Kỷ lục Best Val Macro F1: {best_val_f1:.2f}% (Acc: {best_val_acc:.2f}%)"
+                    )
+                elif isinstance(loaded_ckpt, dict):
+                    model.load_state_dict(loaded_ckpt, strict=False)
+                    print(
+                        "  ✅ [RESUME] Đã nạp model state_dict trực tiếp (strict=False). Tiếp tục từ Epoch 1."
+                    )
+                else:
+                    print("  ⚠️ Định dạng checkpoint không phù hợp.")
+            except Exception as e:
+                print(
+                    f"  ⚠️ Không thể nạp checkpoint resume ({e}), bắt đầu huấn luyện từ đầu."
+                )
+                loaded_ckpt = None
+        else:
+            print("  ⚠️ Không tìm thấy checkpoint để resume, bắt đầu huấn luyện từ đầu.")
 
     print(
         f"\n[4/5] Bắt đầu Vòng lặp Huấn Luyện (Epoch {start_epoch}..{args.epochs})..."
@@ -654,6 +845,33 @@ def run_training(args):
                 f"  🔄 [Giải Pháp 2] Chuyển sang Phase {trainer.current_phase}: ĐÃ RESET Early Stopping counter (no_improve_epochs = 0) để Phase {trainer.current_phase} có đủ thời gian thích nghi!"
             )
             no_improve_epochs = 0
+
+        # Khôi phục trạng thái Optimizer và LR Scheduler từ checkpoint ở epoch đầu tiên của lượt resume
+        if epoch == start_epoch and loaded_ckpt is not None:
+            if (
+                isinstance(loaded_ckpt, dict)
+                and "optimizer_state_dict" in loaded_ckpt
+                and loaded_ckpt["optimizer_state_dict"] is not None
+                and trainer.optimizer is not None
+            ):
+                try:
+                    trainer.optimizer.load_state_dict(loaded_ckpt["optimizer_state_dict"])
+                    print("  -> ✅ Đã khôi phục trạng thái Optimizer từ Checkpoint!")
+                except Exception as opt_err:
+                    print(f"  -> ℹ️ Khởi tạo lại trạng thái Optimizer mới ({opt_err}).")
+
+            if (
+                isinstance(loaded_ckpt, dict)
+                and "scheduler_state_dict" in loaded_ckpt
+                and loaded_ckpt["scheduler_state_dict"] is not None
+                and trainer.scheduler is not None
+            ):
+                try:
+                    trainer.scheduler.load_state_dict(loaded_ckpt["scheduler_state_dict"])
+                    print("  -> ✅ Đã khôi phục trạng thái LR Scheduler từ Checkpoint!")
+                except Exception:
+                    pass
+            loaded_ckpt = None  # Chỉ khôi phục một lần ở epoch đầu tiên
 
         model.train()
 
@@ -758,6 +976,30 @@ def run_training(args):
         else:
             nan_streak = 0  # Reset streak nếu epoch hợp lệ
 
+        # Luôn lưu checkpoint gần nhất vào folder resume để có thể resume bất kỳ lúc nào nếu gián đoạn
+        try:
+            resume_last_ckpt = os.path.join(actual_resume_dir, "last_checkpoint.pth")
+            safe_torch_save(
+                {
+                    "epoch": epoch,
+                    "phase": trainer.current_phase,
+                    "model_state_dict": model.state_dict(),
+                    "head_state_dict": model.head.state_dict(),
+                    "optimizer_state_dict": (
+                        trainer.optimizer.state_dict() if trainer.optimizer else None
+                    ),
+                    "scheduler_state_dict": (
+                        trainer.scheduler.state_dict() if trainer.scheduler else None
+                    ),
+                    "best_val_f1": best_val_f1,
+                    "best_val_acc": best_val_acc,
+                    "history": history,
+                },
+                resume_last_ckpt,
+            )
+        except Exception as last_ckpt_err:
+            pass
+
         # Lưu checkpoint nếu đạt Best Val Macro F1
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1
@@ -768,20 +1010,30 @@ def run_training(args):
             )
 
             try:
-                # 1. Lưu weights tổng hợp (huấn luyện / resume)
+                ckpt_payload = {
+                    "epoch": epoch,
+                    "phase": trainer.current_phase,
+                    "model_state_dict": model.state_dict(),
+                    "head_state_dict": model.head.state_dict(),
+                    "optimizer_state_dict": (
+                        trainer.optimizer.state_dict() if trainer.optimizer else None
+                    ),
+                    "scheduler_state_dict": (
+                        trainer.scheduler.state_dict() if trainer.scheduler else None
+                    ),
+                    "best_val_f1": best_val_f1,
+                    "best_val_acc": best_val_acc,
+                    "history": history,
+                }
+
+                # 1. Lưu weights tổng hợp (huấn luyện / resume) vào save_dir và folder resume
                 ckpt_path = os.path.join(args.save_dir, "sequential_unfreeze_best.pth")
-                safe_torch_save(
-                    {
-                        "epoch": epoch,
-                        "phase": trainer.current_phase,
-                        "model_state_dict": model.state_dict(),
-                        "head_state_dict": model.head.state_dict(),
-                        "best_val_f1": best_val_f1,
-                        "best_val_acc": best_val_acc,
-                        "history": history,
-                    },
-                    ckpt_path,
+                safe_torch_save(ckpt_payload, ckpt_path)
+
+                resume_best_ckpt = os.path.join(
+                    actual_resume_dir, "sequential_unfreeze_best.pth"
                 )
+                safe_torch_save(ckpt_payload, resume_best_ckpt)
 
                 # 2. Lưu riêng weights của CLIP để tái sử dụng trong trích xuất đặc trưng
                 clip_save_path = os.path.join(
@@ -891,7 +1143,19 @@ def main():
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Tiếp tục huấn luyện từ checkpoint gần nhất nếu có",
+        help="Bật chế độ tiếp tục huấn luyện (resume) từ checkpoint trong folder resume",
+    )
+    parser.add_argument(
+        "--resume_dir",
+        type=str,
+        default=None,
+        help="Đường dẫn thư mục chứa checkpoint resume (Mặc định: folder 'resume' ở thư mục gốc dự án)",
+    )
+    parser.add_argument(
+        "--resume_file",
+        type=str,
+        default=None,
+        help="Tên file checkpoint cụ thể trong folder resume để nạp (Mặc định: tự động chọn checkpoint mới nhất)",
     )
     args = parser.parse_args()
 
