@@ -40,17 +40,28 @@ def safe_tqdm(iterable, **kwargs):
 
 def safe_torch_save(obj, fpath: str, max_retries: int = 10) -> bool:
     """
-    Hàm lưu checkpoint an toàn tuyệt đối trên Windows chống lỗi Sharing Violation / File Lock:
-    - Ghi trước ra file tạm .tmp với PID và timestamp ngẫu nhiên (chống Windows Defender xung đột).
-    - Retry tối đa 10 lần với thời gian chờ tăng dần (tổng cộng ~15 giây).
-    - Tuyệt đối không throw Exception làm crash toàn bộ tiến trình huấn luyện.
+    Hàm lưu checkpoint an toàn tuyệt đối chống lỗi File Lock / Corrupted Archive:
+    - Ghi trước ra file tạm .tmp với PID và timestamp ngẫu nhiên.
+    - Xử lý dọn sạch file tạm dở dang nếu người dùng bấm dừng (KeyboardInterrupt).
+    - Dùng os.replace để ghi nguyên tử (Atomic Write). Nếu quá trình ghi bị ngắt ngang, file checkpoint cũ vẫn nguyên vẹn 100%.
     """
     os.makedirs(os.path.dirname(os.path.abspath(fpath)), exist_ok=True)
     tmp_path = f"{fpath}.{os.getpid()}_{int(time.time() * 1000)}.tmp"
     try:
         torch.save(obj, tmp_path)
+    except KeyboardInterrupt:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        raise
     except Exception as e:
-        # Nếu không lưu được file tạm, thử lưu trực tiếp vào fpath
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
         try:
             torch.save(obj, fpath)
             return True
@@ -60,7 +71,7 @@ def safe_torch_save(obj, fpath: str, max_retries: int = 10) -> bool:
 
     for retry in range(max_retries):
         try:
-            if os.path.exists(fpath):
+            if os.path.exists(fpath) and sys.platform.startswith("win"):
                 try:
                     os.remove(fpath)
                 except Exception:
@@ -81,7 +92,7 @@ def safe_torch_save(obj, fpath: str, max_retries: int = 10) -> bool:
         return True
     except Exception as final_e:
         print(
-            f"  ⚠️ [LƯU Ý] Chưa thể ghi đè {os.path.basename(fpath)} do Windows Defender đang quét file ({final_e}). Huấn luyện vẫn tiếp tục an toàn..."
+            f"  ⚠️ [LƯU Ý] Chưa thể ghi đè {os.path.basename(fpath)} ({final_e}). Huấn luyện vẫn tiếp tục..."
         )
         return False
 
@@ -195,6 +206,7 @@ class FocalLoss(nn.Module):
         self.label_smoothing = label_smoothing
 
     def forward(self, inputs, targets):
+        inputs = inputs.float()  # Đảm bảo ổn định số học trong chế độ Mixed Precision (FP16 AMP)
         ce_loss = F.cross_entropy(
             inputs, targets, label_smoothing=self.label_smoothing, reduction="none"
         )
@@ -315,7 +327,9 @@ class MultimodalSequentialModel(nn.Module):
         h_vis = self.visual_proj(img_feats)
 
         # 3. Tính tương đồng ngữ nghĩa với 7 Prompt Text (7D)
-        prompt_sims = img_norm @ self.cached_text_norm.to(img_norm.device).T  # (B, 7)
+        prompt_sims = img_norm @ self.cached_text_norm.to(
+            device=img_norm.device, dtype=img_norm.dtype
+        ).T  # (B, 7)
 
         # 4. Facial Keypoint Queries Cross-Attention (25D)
         h_facial = self.facial_cross_attn(patch_tokens)  # (B, 25)
@@ -569,18 +583,17 @@ class SequentialUnfreezeTrainer:
         return True
 
 
-def resolve_resume_checkpoint(
+def resolve_resume_candidates(
     resume_dir: str = None,
     resume_file: str = None,
     fallback_ckpt: str = None,
-) -> Tuple[Optional[str], str]:
+) -> Tuple[List[str], str]:
     """
-    Xác định đường dẫn checkpoint hợp lệ từ thư mục resume.
-    Hỗ trợ:
-      - Quét folder resume tìm file checkpoint mới nhất (.pth, .pt, .ckpt, .tar).
-      - Chỉ định trực tiếp tên file qua resume_file.
-      - Fallback tự động sang checkpoint mặc định nếu folder resume trống.
-    Trả về: (checkpoint_path, actual_resume_dir)
+    Xác định danh sách các file checkpoint ứng viên theo thứ tự ưu tiên.
+    Hỗ trợ cơ chế tự phục hồi (Self-Healing):
+      - Nếu file mới nhất bị hỏng (corrupted / zip error do tải thiếu byte),
+        hệ thống sẽ tự động thử tiếp các file checkpoint trước đó (như sequential_unfreeze_best.pth).
+    Trả về: (candidate_list, actual_resume_dir)
     """
     root_dir = os.path.abspath(os.path.join(BACKEND_DIR, ".."))
 
@@ -599,6 +612,8 @@ def resolve_resume_checkpoint(
 
     os.makedirs(actual_resume_dir, exist_ok=True)
 
+    candidates = []
+
     # 2. Trường hợp chỉ định file cụ thể qua resume_file
     if resume_file:
         candidate_path = (
@@ -607,11 +622,10 @@ def resolve_resume_checkpoint(
             else os.path.join(actual_resume_dir, resume_file)
         )
         if os.path.isfile(candidate_path):
-            print(f"  👉 [RESUME] Sử dụng file checkpoint chỉ định: {candidate_path}")
-            return candidate_path, actual_resume_dir
+            print(f"  👉 [RESUME] Ưu tiên file checkpoint chỉ định: {candidate_path}")
+            candidates.append(candidate_path)
         else:
             print(f"  ⚠️ Không tìm thấy file checkpoint chỉ định: {candidate_path}")
-            return None, actual_resume_dir
 
     # 3. Quét các file checkpoint hợp lệ trong folder resume
     valid_exts = (".pth", ".pt", ".ckpt", ".tar")
@@ -642,33 +656,37 @@ def resolve_resume_checkpoint(
         if len(ckpt_files) > 5:
             print(f"   ... và {len(ckpt_files) - 5} file khác.")
 
-        chosen_ckpt = ckpt_files[0]
-        print(
-            f"  👉 [RESUME] Đã tự động chọn checkpoint mới nhất: {os.path.basename(chosen_ckpt)}"
-        )
-        return chosen_ckpt, actual_resume_dir
+        # Thêm các file chưa có trong candidates
+        for f in ckpt_files:
+            if f not in candidates:
+                candidates.append(f)
 
-    # 4. Fallback nếu folder resume trống
+    # 4. Fallback sang checkpoint mặc định nếu có
     if fallback_ckpt and os.path.isfile(fallback_ckpt):
-        print(f"  ℹ️ Không có file checkpoint nào trong folder '{actual_resume_dir}'.")
-        print(f"  🔄 [FALLBACK] Sử dụng checkpoint tối ưu sẵn có: {fallback_ckpt}")
-        return fallback_ckpt, actual_resume_dir
+        if fallback_ckpt not in candidates:
+            candidates.append(fallback_ckpt)
 
-    print(f"  ⚠️ Thư mục resume hiện đang trống: {actual_resume_dir}")
-    print(f"     Hãy copy file checkpoint (.pth/.pt) vào thư mục trên để tiếp tục huấn luyện.")
-    return None, actual_resume_dir
+    if not candidates:
+        print(f"  ⚠️ Thư mục resume hiện đang trống: {actual_resume_dir}")
+        print(f"     Hãy copy file checkpoint (.pth/.pt) vào thư mục trên để tiếp tục huấn luyện.")
+
+    return candidates, actual_resume_dir
 
 
 def run_training(args):
     device = torch.device(
         args.device if torch.cuda.is_available() and "cuda" in args.device else "cpu"
     )
+    use_fp16 = getattr(args, "fp16", False) and device.type == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=use_fp16)
+
     print(
         f"\n🚀 [EduFocus AI] Bắt đầu Huấn Luyện Rã Băng Tuần Tự trên thiết bị: {device}"
     )
     print(f"  - Dataset: {args.dataset}")
     print(f"  - Tổng Epochs: {args.epochs}")
     print(f"  - Batch Size: {args.batch_size}")
+    print(f"  - Chế Độ Chính Xác: {'FP16 (AMP - Tăng tốc GPU)' if use_fp16 else 'FP32 (Độ chính xác chuẩn)'}")
     print(f"  - Save Dir: {args.save_dir}")
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -795,42 +813,59 @@ def run_training(args):
 
     loaded_ckpt = None
     if getattr(args, "resume", False):
-        chosen_ckpt, actual_resume_dir = resolve_resume_checkpoint(
+        candidate_ckpts, actual_resume_dir = resolve_resume_candidates(
             resume_dir=getattr(args, "resume_dir", None),
             resume_file=getattr(args, "resume_file", None),
             fallback_ckpt=best_ckpt_path,
         )
-        if chosen_ckpt and os.path.isfile(chosen_ckpt):
-            try:
-                print(f"  🔄 [RESUME] Đang tải checkpoint từ: {chosen_ckpt}...")
-                loaded_ckpt = torch.load(
-                    chosen_ckpt, map_location=device, weights_only=False
-                )
-                if isinstance(loaded_ckpt, dict) and "model_state_dict" in loaded_ckpt:
-                    model.load_state_dict(loaded_ckpt["model_state_dict"], strict=False)
-                    start_epoch = loaded_ckpt.get("epoch", 0) + 1
-                    best_val_f1 = loaded_ckpt.get("best_val_f1", 0.0)
-                    best_val_acc = loaded_ckpt.get("best_val_acc", 0.0)
-                    history = loaded_ckpt.get("history", history)
-                    saved_phase = loaded_ckpt.get("phase", "N/A")
+        if candidate_ckpts:
+            for ckpt_candidate in candidate_ckpts:
+                try:
                     print(
-                        f"  ✅ [RESUME] Đã tải checkpoint thành công!"
-                        f"\n     - Tiếp tục từ Epoch: {start_epoch}"
-                        f"\n     - Giai đoạn đã lưu: Phase {saved_phase}"
-                        f"\n     - Kỷ lục Best Val Macro F1: {best_val_f1:.2f}% (Acc: {best_val_acc:.2f}%)"
+                        f"\n  🔄 [RESUME] Đang kiểm tra và tải checkpoint: {os.path.basename(ckpt_candidate)}..."
                     )
-                elif isinstance(loaded_ckpt, dict):
-                    model.load_state_dict(loaded_ckpt, strict=False)
+                    ckpt = torch.load(
+                        ckpt_candidate, map_location=device, weights_only=False
+                    )
+                    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+                        model.load_state_dict(ckpt["model_state_dict"], strict=False)
+                        start_epoch = ckpt.get("epoch", 0) + 1
+                        best_val_f1 = ckpt.get("best_val_f1", 0.0)
+                        best_val_acc = ckpt.get("best_val_acc", 0.0)
+                        history = ckpt.get("history", history)
+                        saved_phase = ckpt.get("phase", "N/A")
+                        loaded_ckpt = ckpt
+                        print(
+                            f"  ✅ [RESUME] Đã tải checkpoint hợp lệ thành công từ: {os.path.basename(ckpt_candidate)}"
+                            f"\n     - Tiếp tục từ Epoch: {start_epoch}"
+                            f"\n     - Giai đoạn đã lưu: Phase {saved_phase}"
+                            f"\n     - Kỷ lục Best Val Macro F1: {best_val_f1:.2f}% (Acc: {best_val_acc:.2f}%)"
+                        )
+                        break
+                    elif isinstance(ckpt, dict):
+                        model.load_state_dict(ckpt, strict=False)
+                        loaded_ckpt = ckpt
+                        print(
+                            f"  ✅ [RESUME] Đã nạp model state_dict trực tiếp từ {os.path.basename(ckpt_candidate)} (strict=False). Tiếp tục từ Epoch 1."
+                        )
+                        break
+                    else:
+                        print(
+                            f"  ⚠️ Định dạng checkpoint không phù hợp ({type(ckpt)}), thử file tiếp theo..."
+                        )
+                except Exception as e:
                     print(
-                        "  ✅ [RESUME] Đã nạp model state_dict trực tiếp (strict=False). Tiếp tục từ Epoch 1."
+                        f"  ⚠️ Checkpoint [{os.path.basename(ckpt_candidate)}] bị lỗi hỏng (corrupted/incomplete archive: {e})"
                     )
-                else:
-                    print("  ⚠️ Định dạng checkpoint không phù hợp.")
-            except Exception as e:
+                    print("  🔄 Đang tự động thử checkpoint tiếp theo trong danh sách...")
+                    loaded_ckpt = None
+                    continue
+
+            if loaded_ckpt is None:
                 print(
-                    f"  ⚠️ Không thể nạp checkpoint resume ({e}), bắt đầu huấn luyện từ đầu."
+                    "\n  ❌ Tất cả checkpoint trong danh sách đều không thể nạp (bị hỏng hoặc chưa tải xong)."
+                    "\n     Bắt đầu huấn luyện từ đầu (Epoch 1)."
                 )
-                loaded_ckpt = None
         else:
             print("  ⚠️ Không tìm thấy checkpoint để resume, bắt đầu huấn luyện từ đầu.")
 
@@ -846,7 +881,7 @@ def run_training(args):
             )
             no_improve_epochs = 0
 
-        # Khôi phục trạng thái Optimizer và LR Scheduler từ checkpoint ở epoch đầu tiên của lượt resume
+        # Khôi phục trạng thái Optimizer, LR Scheduler và GradScaler từ checkpoint ở epoch đầu tiên của lượt resume
         if epoch == start_epoch and loaded_ckpt is not None:
             if (
                 isinstance(loaded_ckpt, dict)
@@ -871,6 +906,19 @@ def run_training(args):
                     print("  -> ✅ Đã khôi phục trạng thái LR Scheduler từ Checkpoint!")
                 except Exception:
                     pass
+
+            if (
+                use_fp16
+                and isinstance(loaded_ckpt, dict)
+                and "scaler_state_dict" in loaded_ckpt
+                and loaded_ckpt["scaler_state_dict"] is not None
+            ):
+                try:
+                    scaler.load_state_dict(loaded_ckpt["scaler_state_dict"])
+                    print("  -> ✅ Đã khôi phục trạng thái FP16 GradScaler từ Checkpoint!")
+                except Exception:
+                    pass
+
             loaded_ckpt = None  # Chỉ khôi phục một lần ở epoch đầu tiên
 
         model.train()
@@ -887,9 +935,10 @@ def run_training(args):
 
             trainer.optimizer.zero_grad()
 
-            # FP32 thuần - không dùng autocast để tránh NaN overflow
-            logits = model(b_imgs, b_lms)
-            loss = criterion(logits, b_labels)
+            # Huấn luyện với Mixed Precision (FP16 AMP) nếu được kích hoạt
+            with torch.cuda.amp.autocast(enabled=use_fp16):
+                logits = model(b_imgs, b_lms)
+                loss = criterion(logits, b_labels)
 
             # NaN Detection: Bỏ qua batch có loss NaN/Inf để ngăn lan truyền
             if torch.isnan(loss) or torch.isinf(loss):
@@ -897,17 +946,33 @@ def run_training(args):
                 trainer.optimizer.zero_grad()
                 continue
 
-            loss.backward()
-            total_norm = torch.nn.utils.clip_grad_norm_(
-                [p for p in model.parameters() if p.requires_grad], max_norm=0.5
-            )
-            if torch.isnan(total_norm) or torch.isinf(total_norm):
-                print(
-                    f"  ⚠️ NaN/Inf gradient norm ({total_norm}) detected at batch {batch_idx}, skipping step..."
+            if use_fp16:
+                scaler.scale(loss).backward()
+                scaler.unscale_(trainer.optimizer)
+                total_norm = torch.nn.utils.clip_grad_norm_(
+                    [p for p in model.parameters() if p.requires_grad], max_norm=0.5
                 )
-                trainer.optimizer.zero_grad()
-                continue
-            trainer.optimizer.step()
+                if torch.isnan(total_norm) or torch.isinf(total_norm):
+                    print(
+                        f"  ⚠️ NaN/Inf gradient norm ({total_norm}) detected at batch {batch_idx}, skipping step..."
+                    )
+                    trainer.optimizer.zero_grad()
+                    scaler.update()
+                    continue
+                scaler.step(trainer.optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                total_norm = torch.nn.utils.clip_grad_norm_(
+                    [p for p in model.parameters() if p.requires_grad], max_norm=0.5
+                )
+                if torch.isnan(total_norm) or torch.isinf(total_norm):
+                    print(
+                        f"  ⚠️ NaN/Inf gradient norm ({total_norm}) detected at batch {batch_idx}, skipping step..."
+                    )
+                    trainer.optimizer.zero_grad()
+                    continue
+                trainer.optimizer.step()
 
             running_loss += loss.item() * len(b_labels)
             preds = torch.argmax(logits, dim=1)
@@ -928,18 +993,19 @@ def run_training(args):
         all_targets = []
 
         with torch.no_grad():
-            for v_imgs, v_lms, v_labels in val_loader:
-                v_imgs = v_imgs.to(device)
-                v_lms = v_lms.to(device)
-                v_labels = v_labels.to(device)
+            with torch.cuda.amp.autocast(enabled=use_fp16):
+                for v_imgs, v_lms, v_labels in val_loader:
+                    v_imgs = v_imgs.to(device)
+                    v_lms = v_lms.to(device)
+                    v_labels = v_labels.to(device)
 
-                v_logits = model(v_imgs, v_lms)
-                v_l = criterion(v_logits, v_labels)
+                    v_logits = model(v_imgs, v_lms)
+                    v_l = criterion(v_logits, v_labels)
 
-                val_loss += v_l.item() * len(v_labels)
-                v_preds = torch.argmax(v_logits, dim=1).cpu().numpy()
-                all_preds.extend(v_preds)
-                all_targets.extend(v_labels.cpu().numpy())
+                    val_loss += v_l.item() * len(v_labels)
+                    v_preds = torch.argmax(v_logits, dim=1).cpu().numpy()
+                    all_preds.extend(v_preds)
+                    all_targets.extend(v_labels.cpu().numpy())
 
         val_loss = val_loss / max(1, len(all_targets))
         val_acc = 100.0 * accuracy_score(all_targets, all_preds)
@@ -991,6 +1057,9 @@ def run_training(args):
                     "scheduler_state_dict": (
                         trainer.scheduler.state_dict() if trainer.scheduler else None
                     ),
+                    "scaler_state_dict": (
+                        scaler.state_dict() if use_fp16 else None
+                    ),
                     "best_val_f1": best_val_f1,
                     "best_val_acc": best_val_acc,
                     "history": history,
@@ -1020,6 +1089,9 @@ def run_training(args):
                     ),
                     "scheduler_state_dict": (
                         trainer.scheduler.state_dict() if trainer.scheduler else None
+                    ),
+                    "scaler_state_dict": (
+                        scaler.state_dict() if use_fp16 else None
                     ),
                     "best_val_f1": best_val_f1,
                     "best_val_acc": best_val_acc,
@@ -1139,6 +1211,11 @@ def main():
     )
     parser.add_argument(
         "--dry_run", action="store_true", help="Chế độ test nhanh pipeline"
+    )
+    parser.add_argument(
+        "--fp16",
+        action="store_true",
+        help="Kích hoạt chế độ huấn luyện nửa độ chính xác FP16 (AMP) giúp tăng tốc 2-3x và tiết kiệm 50%% VRAM",
     )
     parser.add_argument(
         "--resume",

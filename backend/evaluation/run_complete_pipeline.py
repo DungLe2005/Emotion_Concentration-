@@ -81,6 +81,11 @@ def main():
         help="Chạy chế độ kiểm thử nhanh toàn bộ pipeline",
     )
     parser.add_argument(
+        "--fp16",
+        action="store_true",
+        help="Kích hoạt chế độ huấn luyện nửa độ chính xác FP16 (AMP) giúp tăng tốc 2-3x và tiết kiệm 50%% VRAM",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Bật chế độ tiếp tục huấn luyện (resume) từ checkpoint trong folder resume",
@@ -106,6 +111,7 @@ def main():
     print(f"  - Dataset Mục Tiêu: {args.dataset}")
     print(f"  - Tổng Epochs Rã Băng: {args.epochs}")
     print(f"  - Thiết Bị: {args.device}")
+    print(f"  - Chế Độ FP16 (AMP): {args.fp16}")
     print(f"  - Chế Độ Dry-run: {args.dry_run}")
     print(f"  - Bỏ Qua Unfreeze: {args.skip_unfreeze}")
     print(f"  - Tiếp Tục (Resume): {args.resume}")
@@ -136,6 +142,8 @@ def main():
         ]
         if args.dry_run:
             cmd_unfreeze.append("--dry_run")
+        if args.fp16:
+            cmd_unfreeze.append("--fp16")
         if args.resume:
             cmd_unfreeze.append("--resume")
         if args.resume_dir:
