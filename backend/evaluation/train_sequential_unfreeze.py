@@ -2,6 +2,7 @@ import sys
 import os
 import time
 import json
+import math
 import argparse
 import numpy as np
 from PIL import Image
@@ -342,6 +343,32 @@ class MultimodalSequentialModel(nn.Module):
         return logits
 
 
+def make_warmup_cosine_scheduler(
+    optimizer: optim.Optimizer,
+    total_steps: int,
+    warmup_steps: int,
+    eta_min_ratio: float = 0.01,
+) -> optim.lr_scheduler.LambdaLR:
+    """
+    Tạo bộ lập lịch học kết hợp Warmup tuyến tính và Cosine Decay.
+    - Trong giai đoạn Warmup: LR tăng dần từ 5% lên 100% target LR,
+      giúp triệt tiêu hiện tượng 'Gradient Shock' khi mở rã băng các tầng sâu, chống NaN tuyệt đối.
+    - Sau Warmup: LR giảm dần theo hàm Cosine về eta_min_ratio * target LR.
+    """
+    warmup_steps = max(1, warmup_steps)
+    total_steps = max(warmup_steps + 1, total_steps)
+
+    def lr_lambda(current_step: int) -> float:
+        if current_step < warmup_steps:
+            return max(0.05, float(current_step + 1) / float(warmup_steps))
+        progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        progress = min(1.0, max(0.0, progress))
+        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return eta_min_ratio + (1.0 - eta_min_ratio) * cosine_decay
+
+    return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
 class SequentialUnfreezeTrainer:
     """
     Bộ điều phối rã băng tuần tự 3 giai đoạn tối ưu hóa lũy tiến (Curriculum Progressive Unfreezing).
@@ -356,10 +383,12 @@ class SequentialUnfreezeTrainer:
         model: MultimodalSequentialModel,
         total_epochs: int = 100,
         device: str = "cuda",
+        warmup_epochs: int = 2,
     ):
         self.model = model.to(device)
         self.total_epochs = total_epochs
         self.device = device
+        self.warmup_epochs = max(1, warmup_epochs)
         self.current_phase = -1
         self.optimizer = None
         self.scheduler = None
@@ -450,9 +479,12 @@ class SequentialUnfreezeTrainer:
                     }
                 ]
             )
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=p0_limit, eta_min=1e-5
+            phase_len = max(1, p0_limit)
+            warmup_len = max(1, min(self.warmup_epochs, phase_len // 2))
+            self.scheduler = make_warmup_cosine_scheduler(
+                self.optimizer, total_steps=phase_len, warmup_steps=warmup_len, eta_min_ratio=0.01
             )
+            print(f"  -> Đã kích hoạt Warmup: {warmup_len} epochs khởi động nhẹ nhàng chống NaN")
 
         elif self.current_phase == 1:
             # Phase 1: Mở Visual Blocks 10, 11 + ln_post + proj (Bảo toàn 100% Momentum của Adapter)
@@ -503,9 +535,12 @@ class SequentialUnfreezeTrainer:
                         "name": "vis_top2",
                     }
                 )
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=max(1, p1_limit - p0_limit), eta_min=2e-6
+            phase_len = max(1, p1_limit - p0_limit)
+            warmup_len = max(1, min(self.warmup_epochs, max(1, phase_len // 3)))
+            self.scheduler = make_warmup_cosine_scheduler(
+                self.optimizer, total_steps=phase_len, warmup_steps=warmup_len, eta_min_ratio=0.05
             )
+            print(f"  -> Đã kích hoạt Warmup: {warmup_len} epochs khởi động nhẹ nhàng chống NaN")
 
         else:
             # Phase 2: Mở rộng Visual Blocks 8, 9 với Layer-wise LR Decay (LLRD) và duy trì LR tối ưu
@@ -565,9 +600,12 @@ class SequentialUnfreezeTrainer:
                 self.optimizer.add_param_group(
                     {"params": vis_mid, "lr": 5e-6, "weight_decay": 1e-2, "name": "vis_mid"}
                 )
-            self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=max(1, self.total_epochs - p1_limit), eta_min=1e-6
+            phase_len = max(1, self.total_epochs - p1_limit)
+            warmup_len = max(1, min(self.warmup_epochs, max(1, phase_len // 3)))
+            self.scheduler = make_warmup_cosine_scheduler(
+                self.optimizer, total_steps=phase_len, warmup_steps=warmup_len, eta_min_ratio=0.05
             )
+            print(f"  -> Đã kích hoạt Warmup: {warmup_len} epochs khởi động nhẹ nhàng chống NaN")
 
         # In thông tin kiểm tra số tham số trainable
         trainable_cnt = sum(
@@ -677,8 +715,14 @@ def run_training(args):
     device = torch.device(
         args.device if torch.cuda.is_available() and "cuda" in args.device else "cpu"
     )
+    init_scale = getattr(args, "init_scale", 1024.0)
+    warmup_epochs = getattr(args, "warmup_epochs", 2)
     use_fp16 = getattr(args, "fp16", False) and device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_fp16)
+    scaler = torch.cuda.amp.GradScaler(
+        enabled=use_fp16,
+        init_scale=init_scale,
+        growth_interval=1000,
+    )
 
     print(
         f"\n🚀 [EduFocus AI] Bắt đầu Huấn Luyện Rã Băng Tuần Tự trên thiết bị: {device}"
@@ -687,6 +731,9 @@ def run_training(args):
     print(f"  - Tổng Epochs: {args.epochs}")
     print(f"  - Batch Size: {args.batch_size}")
     print(f"  - Chế Độ Chính Xác: {'FP16 (AMP - Tăng tốc GPU)' if use_fp16 else 'FP32 (Độ chính xác chuẩn)'}")
+    if use_fp16:
+        print(f"  - GradScaler init_scale: {init_scale:.1f} (Giảm hệ số để phòng thủ NaN)")
+    print(f"  - LR Warmup: {warmup_epochs} epochs mỗi giai đoạn rã băng")
     print(f"  - Save Dir: {args.save_dir}")
     os.makedirs(args.save_dir, exist_ok=True)
 
@@ -792,7 +839,10 @@ def run_training(args):
     # AMP đã được tắt hoàn toàn (FP32 thuần) để tránh NaN overflow ở blocks Visual sâu
 
     trainer = SequentialUnfreezeTrainer(
-        model, total_epochs=args.epochs, device=str(device)
+        model,
+        total_epochs=args.epochs,
+        device=str(device),
+        warmup_epochs=warmup_epochs,
     )
 
     best_val_f1 = 0.0
@@ -1216,6 +1266,18 @@ def main():
         "--fp16",
         action="store_true",
         help="Kích hoạt chế độ huấn luyện nửa độ chính xác FP16 (AMP) giúp tăng tốc 2-3x và tiết kiệm 50%% VRAM",
+    )
+    parser.add_argument(
+        "--init_scale",
+        type=float,
+        default=1024.0,
+        help="Hệ số scale ban đầu cho GradScaler FP16 (Mặc định: 1024.0 thay vì 65536.0 để chống tràn số NaN)",
+    )
+    parser.add_argument(
+        "--warmup_epochs",
+        type=int,
+        default=2,
+        help="Số epoch Warmup học tăng dần ở đầu mỗi giai đoạn rã băng để chống sốc gradient (Mặc định: 2)",
     )
     parser.add_argument(
         "--resume",

@@ -86,6 +86,18 @@ def main():
         help="Kích hoạt chế độ huấn luyện nửa độ chính xác FP16 (AMP) giúp tăng tốc 2-3x và tiết kiệm 50%% VRAM",
     )
     parser.add_argument(
+        "--init_scale",
+        type=float,
+        default=1024.0,
+        help="Hệ số scale ban đầu cho GradScaler FP16 (Mặc định: 1024.0)",
+    )
+    parser.add_argument(
+        "--warmup_epochs",
+        type=int,
+        default=2,
+        help="Số epoch Warmup khi rã băng (Mặc định: 2)",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Bật chế độ tiếp tục huấn luyện (resume) từ checkpoint trong folder resume",
@@ -112,6 +124,9 @@ def main():
     print(f"  - Tổng Epochs Rã Băng: {args.epochs}")
     print(f"  - Thiết Bị: {args.device}")
     print(f"  - Chế Độ FP16 (AMP): {args.fp16}")
+    if args.fp16:
+        print(f"  - GradScaler init_scale: {args.init_scale}")
+    print(f"  - LR Warmup: {args.warmup_epochs} epochs")
     print(f"  - Chế Độ Dry-run: {args.dry_run}")
     print(f"  - Bỏ Qua Unfreeze: {args.skip_unfreeze}")
     print(f"  - Tiếp Tục (Resume): {args.resume}")
@@ -139,6 +154,10 @@ def main():
             str(args.batch_size),
             "--device",
             args.device,
+            "--init_scale",
+            str(args.init_scale),
+            "--warmup_epochs",
+            str(args.warmup_epochs),
         ]
         if args.dry_run:
             cmd_unfreeze.append("--dry_run")
