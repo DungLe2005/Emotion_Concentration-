@@ -71,9 +71,27 @@ def main():
         help="Thiết bị tính toán",
     )
     parser.add_argument(
+        "--lora_blocks",
+        type=str,
+        default="4-11",
+        help="Khối blocks tiêm LoRA (Mặc định: 4-11)",
+    )
+    parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=8,
+        help="LoRA Rank r (Mặc định: 8)",
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=float,
+        default=16.0,
+        help="LoRA Alpha (Mặc định: 16.0)",
+    )
+    parser.add_argument(
         "--skip_unfreeze",
         action="store_true",
-        help="Bỏ qua bước huấn luyện rã băng nếu đã có weights",
+        help="Bỏ qua bước huấn luyện fine-tune nếu đã có weights",
     )
     parser.add_argument(
         "--dry_run",
@@ -119,31 +137,33 @@ def main():
     python_exe = sys.executable
 
     print("      EDUFOCUS AI - QUY TRÌNH NÂNG CẤP ĐỘ CHÍNH XÁC TOÀN DIỆN")
-    print("      (Sequential Unfreezing -> Feature Extraction -> EPSO -> Ensemble)")
+    print("      (CLIP LoRA Fine-Tuning -> Feature Extraction -> EPSO -> Ensemble)")
     print(f"  - Dataset Mục Tiêu: {args.dataset}")
-    print(f"  - Tổng Epochs Rã Băng: {args.epochs}")
+    print(f"  - Tổng Epochs Huấn Luyện: {args.epochs}")
+    print(f"  - LoRA Target Blocks: {args.lora_blocks}")
+    print(f"  - LoRA Rank: {args.lora_rank}, Alpha: {args.lora_alpha}")
     print(f"  - Thiết Bị: {args.device}")
     print(f"  - Chế Độ FP16 (AMP): {args.fp16}")
     if args.fp16:
         print(f"  - GradScaler init_scale: {args.init_scale}")
     print(f"  - LR Warmup: {args.warmup_epochs} epochs")
     print(f"  - Chế Độ Dry-run: {args.dry_run}")
-    print(f"  - Bỏ Qua Unfreeze: {args.skip_unfreeze}")
+    print(f"  - Bỏ Qua Huấn Luyện: {args.skip_unfreeze}")
     print(f"  - Tiếp Tục (Resume): {args.resume}")
     if args.resume_dir:
         print(f"  - Thư Mục Resume: {args.resume_dir}")
     if args.resume_file:
         print(f"  - Checkpoint File: {args.resume_file}")
 
-    # BƯỚC 1: HUẤN LUYỆN RÃ BĂNG TUẦN TỰ (100 EPOCHS)
+    # BƯỚC 1: HUẤN LUYỆN CLIP VỚI LORA (BLOCKS 4..11)
     if not args.skip_unfreeze:
-        unfreeze_script = os.path.join(
-            BACKEND_DIR, "evaluation", "train_sequential_unfreeze.py"
+        lora_script = os.path.join(
+            BACKEND_DIR, "evaluation", "train_lora.py"
         )
-        cmd_unfreeze = [
+        cmd_lora = [
             python_exe,
             "-u",
-            unfreeze_script,
+            lora_script,
             "--dataset",
             args.dataset,
             "--epochs",
@@ -158,20 +178,26 @@ def main():
             str(args.init_scale),
             "--warmup_epochs",
             str(args.warmup_epochs),
+            "--lora_blocks",
+            args.lora_blocks,
+            "--lora_rank",
+            str(args.lora_rank),
+            "--lora_alpha",
+            str(args.lora_alpha),
         ]
         if args.dry_run:
-            cmd_unfreeze.append("--dry_run")
+            cmd_lora.append("--dry_run")
         if args.fp16:
-            cmd_unfreeze.append("--fp16")
+            cmd_lora.append("--fp16")
         if args.resume:
-            cmd_unfreeze.append("--resume")
+            cmd_lora.append("--resume")
         if args.resume_dir:
-            cmd_unfreeze.extend(["--resume_dir", args.resume_dir])
+            cmd_lora.extend(["--resume_dir", args.resume_dir])
         if args.resume_file:
-            cmd_unfreeze.extend(["--resume_file", args.resume_file])
+            cmd_lora.extend(["--resume_file", args.resume_file])
         run_step(
-            "1. Huấn Luyện Rã Băng Tuần Tự (CLIP Visual Top-4 + Projections + ResMLP Head)",
-            cmd_unfreeze,
+            "1. Huấn Luyện CLIP LoRA (Blocks 4-11 + Projections + ResMLP Head)",
+            cmd_lora,
         )
     else:
         print("\n⏩ Đã bỏ qua Bước 1 (Sử dụng checkpoint fine-tuned có sẵn)...")

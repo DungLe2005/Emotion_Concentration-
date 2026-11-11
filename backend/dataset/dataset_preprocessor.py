@@ -21,6 +21,9 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
+# Cấu hình cache an toàn cho matplotlib trên Windows
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(BACKEND_DIR, ".tmp_mpl"))
+
 from dataset.dataset_loader import (
     DatasetRegistry,
     STANDARD_EMOTIONS,
@@ -52,17 +55,34 @@ class MultiDatasetPreprocessor:
         print(f"[Preprocessor] Thiết bị tính toán: {self.device}")
 
         print("[Preprocessor] Đang nạp mô hình CLIP ViT-B/32...")
-        self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=self.device)
-
         finetuned_clip_path = os.path.join(BACKEND_DIR, "models", "clip_finetuned_best.pth")
+        
+        # Transform chuẩn tĩnh của CLIP ViT (224x224)
+        from torchvision import transforms
+        clip_norm_mean = (0.48145466, 0.4578275, 0.40821073)
+        clip_norm_std = (0.26862954, 0.26130258, 0.27577711)
+        self.clip_preprocess = transforms.Compose(
+            [
+                transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(clip_norm_mean, clip_norm_std),
+            ]
+        )
+
+        loaded_offline = False
         if os.path.exists(finetuned_clip_path):
             try:
-                print(f"[Preprocessor] Tìm thấy weights CLIP Fine-tuned tại '{finetuned_clip_path}'. Đang nạp...")
-                state_dict = torch.load(finetuned_clip_path, map_location=self.device, weights_only=True)
-                self.clip_model.load_state_dict(state_dict)
-                print("[Preprocessor] ✅ Đã nạp thành công weights CLIP Fine-tuned!")
+                print(f"[Preprocessor] Tìm thấy weights CLIP Fine-tuned tại '{finetuned_clip_path}'. Đang nạp trực tiếp...")
+                state_dict = torch.load(finetuned_clip_path, map_location=self.device, weights_only=False)
+                self.clip_model = clip.model.build_model(state_dict).to(self.device)
+                print("[Preprocessor] ✅ Đã nạp thành công weights CLIP Fine-tuned từ checkpoint local!")
+                loaded_offline = True
             except Exception as e:
-                print(f"[Preprocessor] Cảnh báo không thể nạp fine-tuned weights ({e}), sử dụng weights mặc định.")
+                print(f"[Preprocessor] Cảnh báo không thể nạp checkpoint local ({e})")
+
+        if not loaded_offline:
+            self.clip_model, _ = clip.load("ViT-B/32", device=self.device)
 
         self.clip_model = self.clip_model.float().eval()
         self.text_features = get_emotion_centroid_embeddings(self.clip_model, device=self.device)
@@ -84,7 +104,7 @@ class MultiDatasetPreprocessor:
 
         if os.path.exists(vproj_path):
             try:
-                from evaluation.train_sequential_unfreeze import VisualProjection
+                from models.visual_projection import VisualProjection
                 self.visual_proj = VisualProjection(in_dim=512, out_dim=512).to(self.device).eval()
                 self.visual_proj.load_state_dict(torch.load(vproj_path, map_location=self.device, weights_only=True))
                 print("[Preprocessor] ✅ Đã nạp thành công VisualProjection!")
