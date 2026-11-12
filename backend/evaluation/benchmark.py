@@ -24,6 +24,7 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 from models.mlp import EmotionMLP
+from models.resmlp import EmotionResMLP
 from dataset.dataset_loader import DatasetRegistry, STANDARD_EMOTIONS, STANDARD_LABEL_TO_IDX
 from dataset.dataset_preprocessor import load_dataset_cache
 
@@ -36,51 +37,53 @@ class MultiDatasetBenchmark:
 
     def __init__(
         self,
-        model_weights_path: str = "emotion_mlp_epso_weights.pth",
-        epso_mask_path: str = "epso_mask_real.npy",
+        model_weights_path: str = None,
+        input_dim: int = 544,
         device: torch.device = None,
     ):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"[Benchmark] Thiết bị kiểm thử: {self.device}")
 
-        full_mask_path = os.path.join(BACKEND_DIR, epso_mask_path) if not os.path.isabs(epso_mask_path) else epso_mask_path
-        if not os.path.exists(full_mask_path):
-            raise FileNotFoundError(f"[Benchmark] Không tìm thấy EPSO mask tại: {full_mask_path}")
-        self.epso_mask = np.load(full_mask_path)
-        self.reduced_dim = len(self.epso_mask)
-        self._mask_path = full_mask_path
+        self.input_dim = input_dim
+        if model_weights_path is None:
+            if os.path.exists(os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth")):
+                model_weights_path = "emotion_mlp_weights.pth"
+            else:
+                model_weights_path = "emotion_resmlp_weights.pth"
 
         full_weights_path = os.path.join(BACKEND_DIR, model_weights_path) if not os.path.isabs(model_weights_path) else model_weights_path
         if not os.path.exists(full_weights_path):
             raise FileNotFoundError(f"[Benchmark] Không tìm thấy weights mô hình tại: {full_weights_path}")
 
         self._weights_path = full_weights_path
-        self.model = EmotionMLP(input_dim=self.reduced_dim, num_classes=len(STANDARD_EMOTIONS)).to(self.device)
-        self.model.load_state_dict(
-            torch.load(full_weights_path, map_location=self.device, weights_only=True)
-        )
+        state_dict = torch.load(full_weights_path, map_location=self.device, weights_only=True)
+        
+        # Tự động nhận diện cấu trúc Baseline EmotionMLP vs EmotionResMLP
+        if "res1.fc1.weight" in state_dict or "res1.fc1.weight" in state_dict:
+            self.model = EmotionResMLP(input_dim=self.input_dim, num_classes=len(STANDARD_EMOTIONS)).to(self.device)
+            model_type = "EmotionResMLP"
+        else:
+            self.model = EmotionMLP(input_dim=self.input_dim, num_classes=len(STANDARD_EMOTIONS)).to(self.device)
+            model_type = "Baseline EmotionMLP"
+
+        self.model.load_state_dict(state_dict)
         self.model.eval()
-        print(f"[Benchmark] Đã nạp mô hình MLP (EPSO {self.reduced_dim} chiều)")
+        print(f"[Benchmark] Đã nạp mô hình {model_type} ({self.input_dim} chiều)")
         print(f"  >> Weights: {os.path.basename(full_weights_path)}")
-        print(f"  >> Mask: {os.path.basename(full_mask_path)}")
 
     @staticmethod
     def find_weights_for_dataset(dataset_name: str) -> str:
         """Tìm file trọng số riêng cho dataset, fallback sang trọng số chung."""
-        ds_specific = os.path.join(BACKEND_DIR, f"emotion_mlp_epso_weights_{dataset_name.lower()}.pth")
-        default = os.path.join(BACKEND_DIR, "emotion_mlp_epso_weights.pth")
-        if os.path.exists(ds_specific):
-            return ds_specific
-        return default
-
-    @staticmethod
-    def find_mask_for_dataset(dataset_name: str) -> str:
-        """Tìm file EPSO mask riêng cho dataset, fallback sang mask chung."""
-        ds_specific = os.path.join(BACKEND_DIR, f"epso_mask_{dataset_name.lower()}.npy")
-        default = os.path.join(BACKEND_DIR, "epso_mask_real.npy")
-        if os.path.exists(ds_specific):
-            return ds_specific
-        return default
+        candidates = [
+            os.path.join(BACKEND_DIR, f"emotion_mlp_weights_{dataset_name.lower()}.pth"),
+            os.path.join(BACKEND_DIR, f"emotion_resmlp_weights_{dataset_name.lower()}.pth"),
+            os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth"),
+            os.path.join(BACKEND_DIR, "emotion_resmlp_weights.pth"),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        return os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth")
 
     def evaluate_dataset(self, dataset_name: str, cache_dir: str = None) -> dict:
         if cache_dir is None:
@@ -101,9 +104,7 @@ class MultiDatasetBenchmark:
             y_test = ds_data["y_train"]
             split_used = "train"
 
-        X_test_reduced = X_test[:, self.epso_mask]
-
-        X_tensor = torch.tensor(X_test_reduced, dtype=torch.float32)
+        X_tensor = torch.tensor(X_test, dtype=torch.float32)
         y_tensor = torch.tensor(y_test, dtype=torch.long)
         loader = DataLoader(TensorDataset(X_tensor, y_tensor), batch_size=64, shuffle=False)
 
@@ -231,19 +232,16 @@ class MultiDatasetBenchmark:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Multi-Dataset Benchmark Evaluator")
     parser.add_argument("--weights", type=str, default=None, help="File trọng số mô hình MLP (auto-detect nếu không chỉ định)")
-    parser.add_argument("--mask", type=str, default=None, help="File EPSO mask (auto-detect nếu không chỉ định)")
     parser.add_argument("--datasets", nargs="+", default=None, help="Danh sách các datasets để đánh giá")
     args = parser.parse_args()
 
-    # Nếu không chỉ định weights/mask, tự động tìm theo dataset
+    # Nếu không chỉ định weights, tự động tìm theo dataset
     if args.datasets and len(args.datasets) == 1 and args.weights is None:
         ds = args.datasets[0]
         weights_path = MultiDatasetBenchmark.find_weights_for_dataset(ds)
-        mask_path = MultiDatasetBenchmark.find_mask_for_dataset(ds)
-        print(f"[Auto-detect] Dataset '{ds}' -> Weights: {os.path.basename(weights_path)}, Mask: {os.path.basename(mask_path)}")
+        print(f"[Auto-detect] Dataset '{ds}' -> Weights: {os.path.basename(weights_path)}")
     else:
-        weights_path = args.weights or "emotion_mlp_epso_weights.pth"
-        mask_path = args.mask or "epso_mask_real.npy"
+        weights_path = args.weights or "emotion_resmlp_weights.pth"
 
-    benchmark = MultiDatasetBenchmark(model_weights_path=weights_path, epso_mask_path=mask_path)
+    benchmark = MultiDatasetBenchmark(model_weights_path=weights_path, input_dim=544)
     benchmark.run_benchmark_suite(dataset_names=args.datasets)

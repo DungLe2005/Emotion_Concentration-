@@ -10,7 +10,7 @@ Nâng cấp Hướng A (DETR-style Learnable Facial Keypoint Queries Cross-Atten
 - Kiến trúc Pre-LN (LayerNorm trước Attention/FFN) đảm bảo gradient flow cực kỳ ổn định, chống triệt để NaN overflow.
 - Attentive Query Pooling: Học trọng số quan trọng động của từng query thay vì mean pooling đơn thuần.
 - Chiếu ra 25D biểu diễn cấu trúc vi biểu cảm sâu (Deep Facial Deformation Representation).
-- Tổng kích thước đặc trưng giữ nguyên chuẩn 544D (512D Visual + 7D Text + 25D Facial CA), tương thích 100% với EPSO và Ensemble.
+- Tổng kích thước đặc trưng giữ nguyên chuẩn 544D (512D Visual + 7D Text + 25D Facial CA), trực tiếp làm đầu vào cho Classifier Head.
 """
 
 import torch

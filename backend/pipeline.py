@@ -12,6 +12,17 @@ import math
 # Tắt log telemetry ngầm MediaPipe clearcut uploader
 os.environ["GLOG_minloglevel"] = "2"
 os.environ["MEDIAPIPE_DISABLE_CLEARCUT"] = "1"
+
+try:
+    import matplotlib
+except ImportError:
+    import types
+    if "matplotlib" not in sys.modules:
+        _m = types.ModuleType("matplotlib")
+        _m.pyplot = types.ModuleType("matplotlib.pyplot")
+        sys.modules["matplotlib"] = _m
+        sys.modules["matplotlib.pyplot"] = _m.pyplot
+
 from retinaface import RetinaFace
 import mediapipe as mp
 from mediapipe.tasks.python import BaseOptions
@@ -22,9 +33,9 @@ from mediapipe.tasks.python.vision import (
 )
 from PIL import Image
 from models.facial_cross_attention import FacialQueryCrossAttention, extract_clip_visual_and_patches
-from dataset.preprocess_features import RealCLIVP_FER
 from dataset.dataset_loader import get_emotion_centroid_embeddings
 from models.mlp import EmotionMLP
+from models.resmlp import EmotionResMLP
 from features.landmark_features import LandmarkFeatureExtractor
 from session_tracker import SessionEmotionTracker, calculate_concentration_score
 
@@ -54,16 +65,26 @@ class EmotionPipeline:
         )
         self.full_landmarker = FaceLandmarker.create_from_options(options_full)
 
-        # 2. Khởi tạo CLIP ViT-B/32 & nạp weights fine-tuned nếu có
+        # 2. Khởi tạo CLIP (ViT-B/16 mặc định, tự động nhận diện ViT-B/32 nếu checkpoint cũ)
         import clip
-        print("[AI] Đang nạp mô hình CLIP ViT-B/32...")
-        self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=self.device)
         finetuned_clip_path = os.path.join(os.path.dirname(__file__), "models", "clip_finetuned_best.pth")
+        clip_variant = "ViT-B/16"
+        loaded_sd = None
         if os.path.exists(finetuned_clip_path):
             try:
-                state_dict = torch.load(finetuned_clip_path, map_location=self.device, weights_only=True)
-                self.clip_model.load_state_dict(state_dict)
-                print(f"[AI] ✅ Đã nạp thành công weights CLIP Fine-tuned từ: {os.path.basename(finetuned_clip_path)}")
+                loaded_sd = torch.load(finetuned_clip_path, map_location=self.device, weights_only=True)
+                patch_w = loaded_sd.get("visual.conv1.weight", None)
+                if patch_w is not None and patch_w.shape[-1] == 32:
+                    clip_variant = "ViT-B/32"
+            except Exception:
+                pass
+
+        print(f"[AI] Đang nạp mô hình CLIP {clip_variant}...")
+        self.clip_model, self.clip_preprocess = clip.load(clip_variant, device=self.device)
+        if loaded_sd is not None:
+            try:
+                self.clip_model.load_state_dict(loaded_sd)
+                print(f"[AI] ✅ Đã nạp thành công weights CLIP Fine-tuned ({clip_variant}) từ: {os.path.basename(finetuned_clip_path)}")
             except Exception as e:
                 print(f"[AI] Cảnh báo không thể nạp CLIP fine-tuned weights ({e})")
         self.clip_model = self.clip_model.float().eval()
@@ -90,7 +111,7 @@ class EmotionPipeline:
 
         if os.path.exists(vproj_path):
             try:
-                from evaluation.train_sequential_unfreeze import VisualProjection
+                from models.visual_projection import VisualProjection
                 self.visual_proj = VisualProjection(in_dim=512, out_dim=512).to(self.device).eval()
                 self.visual_proj.load_state_dict(torch.load(vproj_path, map_location=self.device, weights_only=True))
                 print(f"[AI] ✅ Đã nạp thành công VisualProjection từ: {os.path.basename(vproj_path)}")
@@ -107,26 +128,38 @@ class EmotionPipeline:
         print("[AI] Đang nạp RetinaFace Model...")
         self.retinaface_model = RetinaFace.build_model()
 
-        # 3. Load EPSO Mask (BẮT BUỘC phải tồn tại - chạy train_epso.py để tạo)
-        epso_mask_path = os.path.join(os.path.dirname(__file__), "epso_mask_real.npy")
-        if not os.path.exists(epso_mask_path):
-            raise FileNotFoundError(
-                f"[AI] LỖI NGHIÊM TRỌNG: Không tìm thấy file '{epso_mask_path}'. "
-                "Cần chạy train_epso.py trước để tạo file này."
-            )
-        self.epso_mask = np.load(epso_mask_path)
-        reduced_dim = len(self.epso_mask)
+        # 3. Kích thước không gian đặc trưng đa mô thức thuần nhất (544D)
+        self.feature_dim = 544
 
         # 4. Tìm nhãn (labels mapping 7 lớp chuẩn từ new_data)
         emotions = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
         self.idx_to_label = {idx: label for idx, label in enumerate(emotions)}
 
-        # 5. Load Soft-Voting Ensemble Head (ResMLP + XGBoost + MLP)
-        from models.ensemble_head import EmotionEnsembleHead
+        # 5. Load Baseline EmotionMLP Classifier trực tiếp trên 544D toàn phần
+        mlp_path = os.path.join(os.path.dirname(__file__), "emotion_mlp_weights.pth")
+        resmlp_path = os.path.join(os.path.dirname(__file__), "emotion_resmlp_weights.pth")
 
-        self.ensemble_head = EmotionEnsembleHead(
-            input_dim=reduced_dim, num_classes=len(emotions), device=self.device
-        )
+        # Xác định file trọng số khả dụng (ưu tiên emotion_mlp_weights.pth)
+        chosen_weights_path = mlp_path if os.path.exists(mlp_path) else (resmlp_path if os.path.exists(resmlp_path) else None)
+
+        if chosen_weights_path is not None:
+            try:
+                sd = torch.load(chosen_weights_path, map_location=self.device, weights_only=True)
+                if "res1.fc1.weight" in sd:
+                    self.classifier = EmotionResMLP(input_dim=self.feature_dim, num_classes=len(emotions)).to(self.device)
+                    self.classifier.load_state_dict(sd)
+                    print(f"[AI] ✅ Đã nạp thành công EmotionResMLP từ: {os.path.basename(chosen_weights_path)}")
+                else:
+                    self.classifier = EmotionMLP(input_dim=self.feature_dim, num_classes=len(emotions)).to(self.device)
+                    self.classifier.load_state_dict(sd)
+                    print(f"[AI] ✅ Đã nạp thành công Baseline EmotionMLP từ: {os.path.basename(chosen_weights_path)}")
+            except Exception as e:
+                print(f"[AI] Cảnh báo không thể nạp classifier weights ({e}), khởi tạo Baseline EmotionMLP mặc định...")
+                self.classifier = EmotionMLP(input_dim=self.feature_dim, num_classes=len(emotions)).to(self.device)
+        else:
+            self.classifier = EmotionMLP(input_dim=self.feature_dim, num_classes=len(emotions)).to(self.device)
+
+        self.classifier.eval()
 
         # 6. Khởi tạo Temporal Face Tracker (IoU Tracking + EMA Smoothing + Hysteresis Thresholding)
         from temporal_tracker import TemporalFaceTracker
@@ -142,7 +175,7 @@ class EmotionPipeline:
             hysteresis_margin=0.12,
         )
 
-        print(f"[AI] Đã nạp thành công Soft-Voting Ensemble Head (ResMLP + XGBoost + MLP) với đầu vào {len(self.epso_mask)} chiều.")
+        print(f"[AI] Đã nạp thành công Baseline EmotionMLP Classifier với đầu vào {self.feature_dim} chiều.")
         print("[AI] Đã khởi tạo TemporalFaceTracker (IoU + EMA Smoothing + Hysteresis).")
         print("[AI] Pipeline đã sẵn sàng nhận ảnh!\n")
 
@@ -552,25 +585,19 @@ class EmotionPipeline:
             )
             face_base64 = base64.b64encode(buffer).decode("utf-8")
 
-            # 3. CLIVP-FER Multimodal Extraction (512D Visual + 7D Text + 25D Facial Cross-Attention = 544D)
+            # 3. Multimodal Feature Extraction (512D Visual + 7D Text + 25D Facial Cross-Attention = 544D)
             t3_start = time.time()
             feature_vector, clip_vector, landmark_vector = self.extract_multimodal_features(
                 final_face_img
             )
             stage3_total_time += time.time() - t3_start
 
-            # 4. Feature Selection (EPSO)
-            t4_start = time.time()
-            reduced_vector = feature_vector[self.epso_mask]
-            stage4_total_time += time.time() - t4_start
-
-            # 5. Emotion Classification (Soft-Voting Ensemble Head)
+            # 4. Emotion Classification (Baseline EmotionMLP trên 544D toàn phần)
             t5_start = time.time()
-            probs_arr = self.ensemble_head.predict_probs(reduced_vector)
+            probs_arr = self.classifier.predict_probs(feature_vector)
 
             latency_mlp = round((time.time() - t5_start) * 1000, 2)
             stage5_total_time += time.time() - t5_start
-            stage4_total_time += latency_mlp / 1000.0
 
             candidate_detections.append(
                 {
@@ -650,16 +677,9 @@ class EmotionPipeline:
         )
         logs.append(
             {
-                "stage": "Feature Selection (EPSO 289D)",
-                "latency_ms": round(stage4_total_time * 1000, 2),
-                "message": f"Hoàn tất lọc đặc trưng (EPSO {len(self.epso_mask)} chiều)",
-            }
-        )
-        logs.append(
-            {
-                "stage": "Emotion Classification (Ensemble Head)",
+                "stage": "Emotion Classification (Baseline EmotionMLP)",
                 "latency_ms": round(stage5_total_time * 1000, 2),
-                "message": "Hoàn tất phân loại bằng Ensemble Classifier (ResMLP + XGBoost)",
+                "message": "Hoàn tất phân loại bằng Baseline EmotionMLP trên 544D toàn phần",
             }
         )
 
@@ -872,21 +892,16 @@ class EmotionPipeline:
                 )
                 face_base64 = base64.b64encode(buffer).decode("utf-8")
 
-                # 3. CLIVP-FER Multimodal Extraction (512D Visual + 7D Text + 25D Facial Cross-Attention = 544D)
+                # 3. Multimodal Feature Extraction (512D Visual + 7D Text + 25D Facial Cross-Attention = 544D)
                 t3_start = time.time()
                 feature_vector, clip_vector, landmark_vector = self.extract_multimodal_features(
                     final_face_img
                 )
                 stage3_total_time += time.time() - t3_start
 
-                # 4. Feature Selection (EPSO)
-                t4_start = time.time()
-                reduced_vector = feature_vector[self.epso_mask]
-                stage4_total_time += time.time() - t4_start
-
-                # 5. Emotion Classification (Soft-Voting Ensemble Head)
+                # 4. Emotion Classification (Baseline EmotionMLP trên 544D)
                 t5_start = time.time()
-                probs_arr = self.ensemble_head.predict_probs(reduced_vector)
+                probs_arr = self.classifier.predict_probs(feature_vector)
 
                 # Áp dụng Upper-Face Gating cho ảnh đơn (tránh nhầm há miệng nói chuyện thành Surprise)
                 from temporal_tracker import apply_upper_face_gating
@@ -956,16 +971,9 @@ class EmotionPipeline:
         )
         logs.append(
             {
-                "stage": "Feature Selection (EPSO 289D)",
-                "latency_ms": round(stage4_total_time * 1000, 2),
-                "message": f"Hoàn tất lọc đặc trưng (EPSO {len(self.epso_mask)} chiều)",
-            }
-        )
-        logs.append(
-            {
-                "stage": "Emotion Classification (Ensemble Head)",
+                "stage": "Emotion Classification (Baseline EmotionMLP)",
                 "latency_ms": round(stage5_total_time * 1000, 2),
-                "message": "Hoàn tất phân loại bằng Ensemble Classifier (ResMLP + XGBoost)",
+                "message": "Hoàn tất phân loại bằng Baseline EmotionMLP trên 544D toàn phần",
             }
         )
 

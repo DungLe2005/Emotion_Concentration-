@@ -2,11 +2,10 @@ import React from 'react';
 import { CheckCircle2, Circle, Loader2 } from 'lucide-react';
 
 const stages = [
-  { id: 'upload', name: '1. Image Decoding & Tight Crop (Giải mã & Alignment 5%)', matchKey: 'Image Decoding' },
-  { id: 'detect', name: '2. Face Detection (RetinaFace TF)', matchKey: 'Face Detection' },
-  { id: 'extract', name: '3. Multimodal 544D (CLIP 512D + Prompt 7D + AU 25D)', matchKey: 'Feature Extraction' },
-  { id: 'optimize', name: '4. EPSO Feature Reduction (544D → 289D)', matchKey: 'Feature Selection' },
-  { id: 'classify', name: '5. Ensemble Classifier (ResMLP + XGBoost)', matchKey: 'Emotion Classification' }
+  { id: 'upload', name: '1. Image Decoding & Tight Crop (Giải mã & Cắt chuẩn 5%)', matchKey: 'Image Decoding' },
+  { id: 'detect', name: '2. Face Detection & Landmarker (MediaPipe / RetinaFace)', matchKey: 'Face Detection' },
+  { id: 'extract', name: '3. Multimodal 544D (CLIP 512D + Prompt 7D + Facial Cross-Attn 25D)', matchKey: 'Feature Extraction' },
+  { id: 'classify', name: '4. Classifier Head (Baseline EmotionMLP)', matchKey: 'Emotion Classification' }
 ];
 
 export default function PipelineVisualizer({ logs = [], isProcessing }) {

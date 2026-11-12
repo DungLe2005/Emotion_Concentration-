@@ -33,6 +33,7 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
 )
+from sklearn.model_selection import train_test_split
 
 import cv2
 from torchvision import transforms
@@ -50,7 +51,7 @@ from dataset.dataset_loader import (
     STANDARD_LABEL_TO_IDX,
     get_emotion_centroid_embeddings,
 )
-from models.resmlp import EmotionResMLP
+from models.mlp import EmotionMLP
 from models.facial_cross_attention import (
     FacialQueryCrossAttention,
     extract_clip_visual_and_patches,
@@ -282,10 +283,10 @@ class MultimodalLoRAModel(nn.Module):
 
         # Classifier Head nhận vector 544D: [512D Visual + 7D Text + 25D Facial CA]
         total_dim = 512 + 7 + 25
-        self.head = EmotionResMLP(input_dim=total_dim, num_classes=num_classes)
+        self.head = EmotionMLP(input_dim=total_dim, num_classes=num_classes)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
-        # 1. Trích xuất đồng thời global visual (512D) và spatial patch tokens (49, 768D)
+        # 1. Trích xuất đồng thời global visual (512D) và spatial patch tokens (49/196, 768D)
         img_feats, patch_tokens = extract_clip_visual_and_patches(
             self.clip.visual, images
         )
@@ -305,7 +306,7 @@ class MultimodalLoRAModel(nn.Module):
         # 5. Ghép nối thành vector 544D chuẩn
         combined = torch.cat([h_vis, prompt_sims, h_facial], dim=1)
 
-        # 6. Dự đoán 7 logits qua EmotionResMLP
+        # 6. Dự đoán 7 logits qua Baseline EmotionMLP
         logits = self.head(combined)
         return logits
 
@@ -333,19 +334,25 @@ def make_warmup_cosine_scheduler(
     return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def load_clip_backbone(variant: str = "ViT-B/32", device: str = "cuda") -> nn.Module:
+def load_clip_backbone(variant: str = "ViT-B/16", device: str = "cuda") -> nn.Module:
     """
     Nạp CLIP ViT an toàn:
-    - Nếu có sẵn clip_finetuned_best.pth local: nạp từ state_dict (không cần internet).
+    - Nếu có sẵn clip_finetuned_best.pth local khớp đúng kiến trúc: nạp từ state_dict.
     - Ngược lại: gọi clip.load (nạp từ cache hoặc tải về).
     """
+    expected_patch_size = 16 if "16" in variant else 32
     local_pth = os.path.join(BACKEND_DIR, "models", "clip_finetuned_best.pth")
     if os.path.exists(local_pth):
         try:
-            print(f"  -> Nạp CLIP ViT từ checkpoint local có sẵn: {local_pth}")
             sd = torch.load(local_pth, map_location=device, weights_only=False)
-            model = clip.model.build_model(sd).to(device)
-            return model.float()
+            patch_w = sd.get("visual.conv1.weight", None)
+            if patch_w is not None and patch_w.shape[-1] == expected_patch_size:
+                print(f"  -> Nạp CLIP ViT ({variant}) từ checkpoint local có sẵn: {local_pth}")
+                model = clip.model.build_model(sd).to(device)
+                return model.float()
+            else:
+                curr_size = patch_w.shape[-1] if patch_w is not None else "Unknown"
+                print(f"  ℹ️ Checkpoint local có patch size {curr_size}, khác với yêu cầu {expected_patch_size}. Chuyển sang clip.load('{variant}')...")
         except Exception as e:
             print(f"  ⚠️ Nạp checkpoint local thất bại ({e}), chuyển sang clip.load...")
 
@@ -371,9 +378,43 @@ def run_training(args):
     # 1. Nạp Dataset
     reader = DatasetRegistry.get_reader(args.dataset)
     splits = reader.get_splits()
-    train_paths, train_labels = splits["train"]
-    val_paths, val_labels = splits["val"]
-    test_paths, test_labels = splits.get("test", ([], []))
+    if "train" not in splits or ("val" not in splits and "test" not in splits):
+        raise ValueError(
+            f"Dataset '{args.dataset}' không có đủ splits 'train' và 'val'/'test'!"
+        )
+
+    raw_train_paths, raw_train_labels = splits["train"]
+
+    # Kiểm tra xem dataset có sẵn tập validation độc lập không
+    if "val" in splits and len(splits["val"][0]) > 0:
+        train_paths, train_labels = raw_train_paths, raw_train_labels
+        val_paths, val_labels = splits["val"]
+        test_paths, test_labels = splits.get("test", ([], []))
+        print(f"  - Cơ chế Split: Sử dụng tập 'val' có sẵn của dataset.")
+    else:
+        # Nếu dataset chỉ có train và test (như RAF-DB, KMUFED):
+        # Dùng Stratified Split để tách tập Validation sạch từ Train,
+        # giữ tập TEST cách ly 100% để chống triệt để rò rỉ dữ liệu (Zero Data Leakage).
+        test_paths, test_labels = splits.get("test", ([], []))
+        train_paths, val_paths, train_labels, val_labels = train_test_split(
+            raw_train_paths,
+            raw_train_labels,
+            test_size=args.val_ratio,
+            stratify=raw_train_labels,
+            random_state=42,
+        )
+        print(
+            f"  - Cơ chế Split: Stratified Split {args.val_ratio * 100:.1f}% từ Train sang Validation (Chống rò rỉ 100%):"
+        )
+        print(
+            f"    + Train sạch (Cập nhật Weights)       : {len(train_paths):,} ảnh"
+        )
+        print(
+            f"    + Validation (Early Stopping & Best F1): {len(val_paths):,} ảnh"
+        )
+        print(
+            f"    + Test Set (Cách ly 100% tuyệt đối)    : {len(test_paths):,} ảnh"
+        )
 
     if args.dry_run:
         print("\n⚡ [DRY-RUN] Giới hạn dữ liệu để kiểm thử nhanh quy trình...")
@@ -382,7 +423,9 @@ def run_training(args):
         test_paths, test_labels = test_paths[:16], test_labels[:16]
         args.epochs = 2
 
-    print(f"  - Train: {len(train_paths)} ảnh | Val: {len(val_paths)} ảnh | Test: {len(test_paths)} ảnh")
+    print(
+        f"  - Tổng số mẫu nạp: Train={len(train_paths)} | Val={len(val_paths)} | Test={len(test_paths)}"
+    )
 
     train_ds = MultimodalEmotionDataset(train_paths, train_labels, transform=get_train_transform())
     val_ds = MultimodalEmotionDataset(val_paths, val_labels, transform=get_val_transform())
@@ -606,9 +649,14 @@ def run_training(args):
             }
             safe_torch_save(lora_ckpt, os.path.join(args.save_dir, "lora_best.pth"))
 
-            # 2. Lưu module con cho Downstream Pipeline
+            # 2. Lưu module con cho Downstream Pipeline (True End-to-End)
             safe_torch_save(model.visual_proj.state_dict(), os.path.join(models_dir, "visual_proj_best.pth"))
             safe_torch_save(model.facial_cross_attn.state_dict(), os.path.join(models_dir, "facial_cross_attn_best.pth"))
+            safe_torch_save(model.head.state_dict(), os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth"))
+            safe_torch_save(model.head.state_dict(), os.path.join(BACKEND_DIR, f"emotion_mlp_weights_{args.dataset.lower()}.pth"))
+            # Tương thích ngược: lưu thêm alias emotion_resmlp_weights.pth
+            safe_torch_save(model.head.state_dict(), os.path.join(BACKEND_DIR, "emotion_resmlp_weights.pth"))
+            print(f"  ✅ Đã lưu trọng số Baseline EmotionMLP (End-to-End) tại: {os.path.join(BACKEND_DIR, 'emotion_mlp_weights.pth')}")
 
             # 3. MERGE LORA WEIGHTS VÀO CLIP ĐỂ XUẤT CHUẨN OPENAI CLIP (302 keys)
             print("  🔄 Đang Merge LoRA weights vào bản sao CLIP ViT để xuất 'clip_finetuned_best.pth'...")
@@ -699,10 +747,16 @@ def main():
         help="Batch size (Mặc định: 16)",
     )
     parser.add_argument(
+        "--val_ratio",
+        type=float,
+        default=0.10,
+        help="Tỷ lệ tách tập Validation từ Train khi dataset chỉ có Train/Test (Mặc định: 0.10 tức 10%%)",
+    )
+    parser.add_argument(
         "--clip_variant",
         type=str,
-        default="ViT-B/32",
-        help="Biến thể CLIP: ViT-B/32 hoặc ViT-B/16",
+        default="ViT-B/16",
+        help="Biến thể CLIP: ViT-B/16 (Khuyến nghị, 196 tokens) hoặc ViT-B/32 (49 tokens)",
     )
     parser.add_argument(
         "--lora_blocks",

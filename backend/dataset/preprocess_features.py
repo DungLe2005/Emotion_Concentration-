@@ -10,7 +10,6 @@ from PIL import Image
 import clip
 import torch.nn as nn
 from retinaface import RetinaFace
-import tensorflow as tf
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:

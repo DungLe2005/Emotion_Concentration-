@@ -89,6 +89,18 @@ def main():
         help="LoRA Alpha (Mặc định: 16.0)",
     )
     parser.add_argument(
+        "--clip_variant",
+        type=str,
+        default="ViT-B/16",
+        help="Biến thể CLIP: ViT-B/16 (Khuyến nghị, 196 tokens) hoặc ViT-B/32 (49 tokens)",
+    )
+    parser.add_argument(
+        "--val_ratio",
+        type=float,
+        default=0.10,
+        help="Tỷ lệ tách Validation từ Train khi dataset chỉ có Train/Test (Mặc định: 0.10)",
+    )
+    parser.add_argument(
         "--skip_unfreeze",
         action="store_true",
         help="Bỏ qua bước huấn luyện fine-tune nếu đã có weights",
@@ -137,7 +149,7 @@ def main():
     python_exe = sys.executable
 
     print("      EDUFOCUS AI - QUY TRÌNH NÂNG CẤP ĐỘ CHÍNH XÁC TOÀN DIỆN")
-    print("      (CLIP LoRA Fine-Tuning -> Feature Extraction -> EPSO -> Ensemble)")
+    print("      (CLIP LoRA Fine-Tuning -> 544D Feature Extraction -> Baseline EmotionMLP Classifier)")
     print(f"  - Dataset Mục Tiêu: {args.dataset}")
     print(f"  - Tổng Epochs Huấn Luyện: {args.epochs}")
     print(f"  - LoRA Target Blocks: {args.lora_blocks}")
@@ -184,6 +196,10 @@ def main():
             str(args.lora_rank),
             "--lora_alpha",
             str(args.lora_alpha),
+            "--val_ratio",
+            str(args.val_ratio),
+            "--clip_variant",
+            args.clip_variant,
         ]
         if args.dry_run:
             cmd_lora.append("--dry_run")
@@ -196,7 +212,7 @@ def main():
         if args.resume_file:
             cmd_lora.extend(["--resume_file", args.resume_file])
         run_step(
-            "1. Huấn Luyện CLIP LoRA (Blocks 4-11 + Projections + ResMLP Head)",
+            "1. Huấn Luyện CLIP LoRA (Blocks 4-11 + Projections + Baseline EmotionMLP Head)",
             cmd_lora,
         )
     else:
@@ -218,21 +234,12 @@ def main():
     else:
         print(f"✅ Đã có sẵn file cache đặc trưng 544D tại: {cache_file}")
 
-    # BƯỚC 3: TỐI ƯU HÓA ĐẶC TRƯNG BẰNG EPSO
-    cmd_epso = [
-        python_exe,
-        "-u",
-        "-c",
-        f"from evaluation.train_epso import train_pipeline; train_pipeline(dataset_names=['{args.dataset}'], run_benchmark_after=False)",
-    ]
-    run_step("3. Chọn Lọc Không Gian Đặc Trưng Bằng Thuật Toán EPSO", cmd_epso)
-
-    # BƯỚC 4: HUẤN LUYỆN ENSEMBLE HEAD (ResMLP + XGBoost + Baseline)
-    ensemble_script = os.path.join(BACKEND_DIR, "evaluation", "train_ensemble.py")
-    cmd_ensemble = [python_exe, "-u", ensemble_script, "--datasets", args.dataset]
+    # BƯỚC 3: HUẤN LUYỆN BASELINE EMOTIONMLP TRÊN 544D TOÀN PHẦN
+    classifier_script = os.path.join(BACKEND_DIR, "evaluation", "train_ensemble.py")
+    cmd_classifier = [python_exe, "-u", classifier_script, "--datasets", args.dataset]
     run_step(
-        "4. Huấn Luyện & Đánh Giá Mô Hình Ensemble Soft-Voting (ResMLP + XGBoost)",
-        cmd_ensemble,
+        "3. Huấn Luyện & Đánh Giá Mô Hình Baseline EmotionMLP Trên 544D Toàn Phần",
+        cmd_classifier,
     )
 
 

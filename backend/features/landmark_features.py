@@ -10,6 +10,17 @@ Tất cả khoảng cách được chuẩn hóa theo chiều rộng khuôn mặt
 
 import sys
 import os
+import types
+
+try:
+    import matplotlib
+except ImportError:
+    if "matplotlib" not in sys.modules:
+        _m = types.ModuleType("matplotlib")
+        _m.pyplot = types.ModuleType("matplotlib.pyplot")
+        sys.modules["matplotlib"] = _m
+        sys.modules["matplotlib.pyplot"] = _m.pyplot
+
 import numpy as np
 import cv2
 import mediapipe as mp

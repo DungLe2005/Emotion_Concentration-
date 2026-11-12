@@ -54,7 +54,7 @@ class MultiDatasetPreprocessor:
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"[Preprocessor] Thiết bị tính toán: {self.device}")
 
-        print("[Preprocessor] Đang nạp mô hình CLIP ViT-B/32...")
+        print("[Preprocessor] Đang nạp mô hình CLIP (ViT-B/16)...")
         finetuned_clip_path = os.path.join(BACKEND_DIR, "models", "clip_finetuned_best.pth")
         
         # Transform chuẩn tĩnh của CLIP ViT (224x224)
@@ -82,7 +82,7 @@ class MultiDatasetPreprocessor:
                 print(f"[Preprocessor] Cảnh báo không thể nạp checkpoint local ({e})")
 
         if not loaded_offline:
-            self.clip_model, _ = clip.load("ViT-B/32", device=self.device)
+            self.clip_model, _ = clip.load("ViT-B/16", device=self.device)
 
         self.clip_model = self.clip_model.float().eval()
         self.text_features = get_emotion_centroid_embeddings(self.clip_model, device=self.device)
