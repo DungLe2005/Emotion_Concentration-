@@ -38,13 +38,12 @@ class MultiDatasetBenchmark:
     def __init__(
         self,
         model_weights_path: str = None,
-        input_dim: int = 544,
+        input_dim: int = None,
         device: torch.device = None,
     ):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"[Benchmark] Thiết bị kiểm thử: {self.device}")
 
-        self.input_dim = input_dim
         if model_weights_path is None:
             if os.path.exists(os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth")):
                 model_weights_path = "emotion_mlp_weights.pth"
@@ -58,11 +57,15 @@ class MultiDatasetBenchmark:
         self._weights_path = full_weights_path
         state_dict = torch.load(full_weights_path, map_location=self.device, weights_only=True)
         
-        # Tự động nhận diện cấu trúc Baseline EmotionMLP vs EmotionResMLP
-        if "res1.fc1.weight" in state_dict or "res1.fc1.weight" in state_dict:
+        # Tự động nhận diện cấu trúc & số chiều đầu vào từ checkpoint (hỗ trợ cả 647D mới và 544D cũ)
+        if "res1.fc1.weight" in state_dict:
+            detected_dim = int(state_dict["input_layer.0.weight"].shape[1]) if "input_layer.0.weight" in state_dict else 647
+            self.input_dim = input_dim or detected_dim
             self.model = EmotionResMLP(input_dim=self.input_dim, num_classes=len(STANDARD_EMOTIONS)).to(self.device)
             model_type = "EmotionResMLP"
         else:
+            detected_dim = int(state_dict["fc1.weight"].shape[1]) if "fc1.weight" in state_dict else 647
+            self.input_dim = input_dim or detected_dim
             self.model = EmotionMLP(input_dim=self.input_dim, num_classes=len(STANDARD_EMOTIONS)).to(self.device)
             model_type = "Baseline EmotionMLP"
 
@@ -241,7 +244,7 @@ if __name__ == "__main__":
         weights_path = MultiDatasetBenchmark.find_weights_for_dataset(ds)
         print(f"[Auto-detect] Dataset '{ds}' -> Weights: {os.path.basename(weights_path)}")
     else:
-        weights_path = args.weights or "emotion_resmlp_weights.pth"
+        weights_path = args.weights
 
-    benchmark = MultiDatasetBenchmark(model_weights_path=weights_path, input_dim=544)
+    benchmark = MultiDatasetBenchmark(model_weights_path=weights_path, input_dim=None)
     benchmark.run_benchmark_suite(dataset_names=args.datasets)

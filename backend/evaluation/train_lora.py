@@ -1,8 +1,8 @@
 """
 Huấn luyện CLIP Fine-tuning với LoRA (Low-Rank Adaptation) - EduFocus AI
-Áp dụng LoRA vào các Transformer Blocks 4 -> 11 của CLIP ViT-B/32.
+Áp dụng LoRA vào các Transformer Blocks 4 -> 11 của CLIP ViT-B/16 (hoặc ViT-B/32).
 Đóng băng 100% Backbone gốc (W0) và Text Encoder.
-Tối ưu hóa liên kết: LoRA (Visual) + VisualProjection (512D) + FacialQueryCrossAttention (25D) + EmotionResMLP Head.
+Tối ưu hóa liên kết: LoRA (Visual) + VisualProjection (512D) + FacialQueryCrossAttention (128D) + Baseline EmotionMLP Head.
 Tự động merge LoRA weights vào clip_finetuned_best.pth đảm bảo tương thích 100% downstream pipeline.
 """
 
@@ -232,11 +232,11 @@ class MultimodalEmotionDataset(Dataset):
 class MultimodalLoRAModel(nn.Module):
     """
     Mô hình tích hợp End-to-End CLIP LoRA (Blocks 4 -> 11):
-    1. CLIP Visual Transformer (W0 frozen, LoRA blocks 4..11 trainable) -> 512D Global + 49 Patch Tokens (768D)
+    1. CLIP Visual Transformer (W0 frozen, LoRA blocks 4..11 trainable) -> 512D Global + 196/49 Patch Tokens (768D)
     2. Visual Projection -> 512D (Trainable)
     3. CLIP Text Prompts -> 7D Cosine Similarity (Frozen & Cached)
-    4. Facial Query Cross-Attention -> 32 Learnable Queries x 2 Decoders -> 25D (Trainable)
-    5. Ghép nối thành 544D -> Classifier Head (EmotionResMLP) -> 7 Logits (Trainable)
+    4. Facial Query Cross-Attention -> 32 Learnable Queries x 2 Decoders -> 128D (Trainable)
+    5. Ghép nối thành 647D -> Classifier Head (Baseline EmotionMLP) -> 7 Logits (Trainable)
     """
 
     def __init__(
@@ -247,10 +247,12 @@ class MultimodalLoRAModel(nn.Module):
         lora_alpha: float = 16.0,
         lora_dropout: float = 0.05,
         num_classes: int = 7,
+        facial_out_dim: int = 128,
     ):
         super().__init__()
         self.clip = clip_model
         self.num_classes = num_classes
+        self.facial_out_dim = facial_out_dim
 
         # Tiêm LoRA vào nhánh Visual của CLIP
         self.lora_info = apply_lora_to_clip_visual(
@@ -271,18 +273,18 @@ class MultimodalLoRAModel(nn.Module):
         # Tầng chiếu tuyến tính riêng biệt cho nhánh Visual (512D -> 512D)
         self.visual_proj = VisualProjection(in_dim=512, out_dim=512, dropout=0.1)
 
-        # Facial Query Cross-Attention (32 queries -> 25D)
+        # Facial Query Cross-Attention (32 queries -> 128D)
         self.facial_cross_attn = FacialQueryCrossAttention(
             embed_dim=768,
             num_queries=32,
             num_heads=8,
             num_layers=2,
-            out_dim=25,
+            out_dim=facial_out_dim,
             dropout=0.1,
         )
 
-        # Classifier Head nhận vector 544D: [512D Visual + 7D Text + 25D Facial CA]
-        total_dim = 512 + 7 + 25
+        # Classifier Head nhận vector 647D: [512D Visual + 7D Text + 128D Facial CA]
+        total_dim = 512 + 7 + facial_out_dim
         self.head = EmotionMLP(input_dim=total_dim, num_classes=num_classes)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
@@ -300,10 +302,10 @@ class MultimodalLoRAModel(nn.Module):
             device=img_norm.device, dtype=img_norm.dtype
         ).T
 
-        # 4. Facial Keypoint Queries Cross-Attention (25D)
+        # 4. Facial Keypoint Queries Cross-Attention (128D)
         h_facial = self.facial_cross_attn(patch_tokens)
 
-        # 5. Ghép nối thành vector 544D chuẩn
+        # 5. Ghép nối thành vector 647D chuẩn
         combined = torch.cat([h_vis, prompt_sims, h_facial], dim=1)
 
         # 6. Dự đoán 7 logits qua Baseline EmotionMLP

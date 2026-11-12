@@ -46,7 +46,8 @@ EMOTION_PROMPTS = [
 
 CLIP_DIM = 512
 PROMPT_DIM = 7
-TOTAL_FEATURE_DIM = CLIP_DIM + PROMPT_DIM + NUM_LANDMARK_FEATURES  # 512 + 7 + 25 = 544
+FACIAL_CA_DIM = 128
+TOTAL_FEATURE_DIM = CLIP_DIM + PROMPT_DIM + FACIAL_CA_DIM  # 512 + 7 + 128 = 647
 
 
 class MultiDatasetPreprocessor:
@@ -94,11 +95,11 @@ class MultiDatasetPreprocessor:
         vproj_path = os.path.join(BACKEND_DIR, "models", "visual_proj_best.pth")
         if os.path.exists(fca_path):
             try:
-                self.facial_cross_attn = FacialQueryCrossAttention(
-                    embed_dim=768, num_queries=32, num_heads=8, num_layers=2, out_dim=25
+                fca_sd = torch.load(fca_path, map_location=self.device, weights_only=True)
+                self.facial_cross_attn = FacialQueryCrossAttention.from_state_dict(
+                    fca_sd, embed_dim=768, num_queries=32, num_heads=8, num_layers=2
                 ).to(self.device).eval()
-                self.facial_cross_attn.load_state_dict(torch.load(fca_path, map_location=self.device, weights_only=True))
-                print("[Preprocessor] ✅ Đã nạp thành công FacialQueryCrossAttention (Hướng B GPU)!")
+                print(f"[Preprocessor] ✅ Đã nạp thành công FacialQueryCrossAttention ({self.facial_cross_attn.out_dim}D)!")
             except Exception as e:
                 print(f"[Preprocessor] Cảnh báo không thể nạp FacialQueryCrossAttention ({e})")
 
@@ -181,13 +182,14 @@ class MultiDatasetPreprocessor:
                             h_facial = self.facial_cross_attn(patch_tokens).cpu().numpy()
                             h_vis_np = h_vis.cpu().numpy()
 
-                            batch_544 = np.concatenate([h_vis_np, prompt_sims, h_facial], axis=1)
-                            combined_list.append(batch_544)
+                            batch_feats = np.concatenate([h_vis_np, prompt_sims, h_facial], axis=1)
+                            combined_list.append(batch_feats)
 
+                cur_dim = CLIP_DIM + PROMPT_DIM + self.facial_cross_attn.out_dim
                 combined_features = (
                     np.concatenate(combined_list, axis=0)
                     if combined_list
-                    else np.zeros((len(image_paths), TOTAL_FEATURE_DIM), dtype=np.float32)
+                    else np.zeros((len(image_paths), cur_dim), dtype=np.float32)
                 )
                 processed_splits[f"X_{split_name}"] = combined_features
                 processed_splits[f"y_{split_name}"] = np.array(labels, dtype=np.int64)

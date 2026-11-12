@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from models.mlp import EmotionMLP
 
 class ResBlock(nn.Module):
     """
@@ -28,10 +29,10 @@ class ResBlock(nn.Module):
 
 class EmotionResMLP(nn.Module):
     """
-    Deep Residual MLP Classifier cho vector đặc trưng EPSO (289D / 544D).
+    Deep Residual MLP Classifier cho vector đặc trưng đa mô thức 647D.
     Hỗ trợ Residual Connections giúp học sâu hơn mà không làm biến dạng thông tin.
     """
-    def __init__(self, input_dim=289, num_classes=7):
+    def __init__(self, input_dim=647, num_classes=7):
         super(EmotionResMLP, self).__init__()
         self.input_layer = nn.Sequential(
             nn.Linear(input_dim, 512),
@@ -58,5 +59,28 @@ class EmotionResMLP(nn.Module):
         return x
 
     def predict_probs(self, x):
-        logits = self.forward(x)
-        return F.softmax(logits, dim=1)
+        """
+        Dự đoán phân phối xác suất mềm (Softmax probabilities).
+        Nhận vào: torch.Tensor hoặc np.ndarray (1D hoặc 2D).
+        Trả về: np.ndarray shape (batch_size, num_classes).
+        """
+        self.eval()
+        device = next(self.parameters()).device
+        if not isinstance(x, torch.Tensor):
+            x = torch.tensor(x, dtype=torch.float32)
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        x = x.to(device)
+        with torch.no_grad():
+            logits = self.forward(x)
+            probs = F.softmax(logits, dim=1)
+        return probs.cpu().numpy()
+
+    def predict(self, x):
+        """
+        Dự đoán lớp cảm xúc, độ tin cậy và phân phối xác suất.
+        """
+        probs = self.predict_probs(x)
+        pred_class = int(np.argmax(probs[0]))
+        confidence = float(probs[0, pred_class])
+        return pred_class, confidence, probs[0]

@@ -4,7 +4,7 @@ import { CheckCircle2, Circle, Loader2 } from 'lucide-react';
 const stages = [
   { id: 'upload', name: '1. Image Decoding & Tight Crop (Giải mã & Cắt chuẩn 5%)', matchKey: 'Image Decoding' },
   { id: 'detect', name: '2. Face Detection & Landmarker (MediaPipe / RetinaFace)', matchKey: 'Face Detection' },
-  { id: 'extract', name: '3. Multimodal 544D (CLIP 512D + Prompt 7D + Facial Cross-Attn 25D)', matchKey: 'Feature Extraction' },
+  { id: 'extract', name: '3. Multimodal 647D (CLIP 512D + Prompt 7D + Facial Cross-Attn 128D)', matchKey: 'Feature Extraction' },
   { id: 'classify', name: '4. Classifier Head (Baseline EmotionMLP)', matchKey: 'Emotion Classification' }
 ];
 

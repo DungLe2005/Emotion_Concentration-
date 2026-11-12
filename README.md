@@ -8,11 +8,11 @@
 ## 📌 MỤC LỤC
 1. [Giới Thiệu Tổng Quan](#1-giới-thiệu-tổng-quan)
 2. [Kiến Trúc Toàn Diện Hệ Thống (End-to-End Architecture)](#2-kiến-trúc-toàn-diện-hệ-thống-end-to-end-architecture)
-3. [Không Gian Đặc Trưng Đa Mô Thức 544 Chiều (544D Multimodal Space)](#3-không-gian-đặc-trưng-đa-mô-thức-544-chiều-544d-multimodal-space)
+3. [Không Gian Đặc Trưng Đa Mô Thức 647 Chiều (647D Multimodal Space)](#3-không-gian-đặc-trưng-đa-mô-thức-647-chiều-647d-multimodal-space)
    - [3.1. Nhánh 1: Đặc trưng Thị giác Toàn cục (CLIP ViT-B/16 Visual Embeddings 512D)](#31-nhánh-1-đặc-trưng-thị-giác-toàn-cục-clip-vit-b16-visual-embeddings-512d)
    - [3.2. Nhánh 2: Chỉ số Tương đồng Ngữ nghĩa Văn bản (Semantic Prompt Cosine Similarities 7D)](#32-nhánh-2-chỉ-số-tương-đồng-ngữ-nghĩa-văn-bản-semantic-prompt-cosine-similarities-7d)
-   - [3.3. Nhánh 3: Đặc trưng Chú ý Biểu cảm Sâu (Facial Query Cross-Attention 25D trên 196 Tokens)](#33-nhánh-3-đặc-trưng-chú-ý-biểu-cảm-sâu-facial-query-cross-attention-25d-trên-196-tokens)
-   - [3.4. Ghép nối Vector Đặc trưng Toàn phần (544D Multimodal Vector)](#34-ghép-nối-vector-đặc-trưng-toàn-phần-544d-multimodal-vector)
+   - [3.3. Nhánh 3: Đặc trưng Chú ý Biểu cảm Sâu (Facial Query Cross-Attention 128D trên 196 Tokens)](#33-nhánh-3-đặc-trưng-chú-ý-biểu-cảm-sâu-facial-query-cross-attention-128d-trên-196-tokens)
+   - [3.4. Ghép nối Vector Đặc trưng Toàn phần (647D Multimodal Vector)](#34-ghép-nối-vector-đặc-trưng-toàn-phần-647d-multimodal-vector)
 4. [Mô Hình Phân Loại Cảm Xúc Baseline EmotionMLP](#4-mô-hình-phân-loại-cảm-xúc-baseline-emotionmlp)
    - [4.1. Kiến Trúc Mạng Nơ-ron Baseline EmotionMLP](#41-kiến-trúc-mạng-nơ-ron-baseline-emotionmlp)
    - [4.2. Cơ Chế Huấn Luyện Khép Kín 1 Giai Đoạn (True End-to-End Joint Training)](#42-cơ-chế-huấn-luyện-khép-kín-1-giai-đoạn-true-end-to-end-joint-training)
@@ -58,17 +58,17 @@ flowchart TD
     A["🎥 Camera / Video Stream / Ảnh tải lên"] --> B["1. MediaPipe FaceLandmarker (12ms - Max 20 mặt)\n[Fallback: RetinaFace]"]
     B --> C["Cắt khuôn mặt & Trích xuất 478 Facial 3D Landmarks"]
     
-    subgraph S1["2. Không Gian Đặc Trưng Đa Mô Thức (544D)"]
+    subgraph S1["2. Không Gian Đặc Trưng Đa Mô Thức (647D)"]
         C --> D1["Nhánh Thị Giác (512D)\nCLIP ViT-B/16 + LoRA Blocks 4-11\n+ VisualProjection Residual"]
         C --> D2["Nhánh Ngữ Nghĩa (7D)\nPrompt Ensembling Centroid\n(CuPL Descriptions -> Cosine Sim)"]
-        C --> D3["Nhánh Giải Phẫu Sâu (25D)\nDETR-style Facial Query Cross-Attention\n(196 Patch Tokens ViT-B/16)"]
-        D1 --> E["Ghép Nối Vector Trực Tiếp:\n512D + 7D + 25D = 544D Toàn Phần"]
+        C --> D3["Nhánh Giải Phẫu Sâu (128D)\nDETR-style Facial Query Cross-Attention\n(196 Patch Tokens ViT-B/16)"]
+        D1 --> E["Ghép Nối Vector Trực Tiếp:\n512D + 7D + 128D = 647D Toàn Phần"]
         D2 --> E
         D3 --> E
     end
 
     subgraph S2["3. Phân Loại Nơ-ron (Single Baseline EmotionMLP Head)"]
-        E --> F["Baseline EmotionMLP (544D)\nDense(512) -> Dense(256) -> Dense(7)\nBatchNorm + LeakyReLU + Dropout"]
+        E --> F["Baseline EmotionMLP (647D)\nDense(512) -> Dense(256) -> Dense(7)\nBatchNorm + LeakyReLU + Dropout"]
         F --> G["Dự Đoán Xác Suất Softmax (7 Lớp)\nAngry, Disgust, Fear, Happy, Neutral, Sad, Surprise"]
     end
 
@@ -88,7 +88,7 @@ flowchart TD
 
 ---
 
-## 3. Không Gian Đặc Trưng Đa Mô Thức 544 Chiều (544D Multimodal Space)
+## 3. Không Gian Đặc Trưng Đa Mô Thức 647 Chiều (647D Multimodal Space)
 
 ### 3.1. Nhánh 1: Đặc trưng Thị giác Toàn cục (CLIP ViT-B/16 Visual Embeddings 512D)
 - **Mô hình nền tảng**: OpenAI CLIP ViT-B/16 (Vision Transformer với patch size $16 \times 16$, chia ảnh $224 \times 224$ thành $14 \times 14 = 196$ patches).
@@ -98,7 +98,7 @@ flowchart TD
     $$\Delta W = \frac{\alpha}{r} (B \cdot A), \quad r=8, \; \alpha=16$$
   - Giảm **97.6% số tham số cần huấn luyện** so với Full Fine-Tuning, loại bỏ hiện tượng quá khớp (overfitting).
 - **Tầng Chiếu Visual Projection**:
-  - Ánh xạ vector 512D đầu ra của CLIP qua một khối Residual MLP (`Linear -> LayerNorm -> GELU -> Dropout(0.1) -> Linear -> Residual Add -> LayerNorm`), chuẩn hóa vector đặc trưng về không gian biểu cảm.
+  - Ánh xạ vector 512D đầu ra của CLIP qua một khối Residual MLP (`Linear -> LayerNorm -> GELU -> Dropout(0.1) -> Residual Add -> LayerNorm`), chuẩn hóa vector đặc trưng về không gian biểu cảm.
 
 ### 3.2. Nhánh 2: Chỉ số Tương đồng Ngữ nghĩa Văn bản (Semantic Prompt Cosine Similarities 7D)
 - Dựa trên phương pháp **CuPL (Customizing CLIP with Language Models - CVPR 2023)** và Prompt Ensembling.
@@ -108,17 +108,17 @@ flowchart TD
 - Đầu ra của nhánh là vector tương đồng Cosine 7 chiều giữa vector thị giác $\mathbf{v}_{512}$ và 7 tâm cụm cảm xúc:
   $$s_k = \frac{\mathbf{v}_{512} \cdot \mathbf{c}_k}{\|\mathbf{v}_{512}\|_2 \cdot \|\mathbf{c}_k\|_2}, \quad k \in \{1, \dots, 7\}$$
 
-### 3.3. Nhánh 3: Đặc trưng Chú ý Biểu cảm Sâu (Facial Query Cross-Attention 25D trên 196 Tokens)
+### 3.3. Nhánh 3: Đặc trưng Chú ý Biểu cảm Sâu (Facial Query Cross-Attention 128D trên 196 Tokens)
 - **Kiến trúc DETR-Style Cross-Attention**: Sử dụng module `FacialQueryCrossAttention` để nắm bắt biến dạng vi mô sâu mà không phụ thuộc vào góc nghiêng khuôn mặt.
 - Module bao gồm:
   - **32 Learnable Facial Queries** ($\mathbf{Q} \in \mathbb{R}^{32 \times 768}$).
   - **Key & Value**: Được trích xuất từ **196 Spatial Patch Tokens** ($\mathbf{K}, \mathbf{V} \in \mathbb{R}^{196 \times 768}$) tại tầng Transformer Block 11 của CLIP ViT-B/16.
   - **Multi-Head Cross-Attention** (8 heads, 2 layers) cho phép các queries học cách "tìm kiếm" và "tập trung" vào các biến dạng vi mô trên các vùng cơ mặt nhạy cảm với độ phân giải cao gấp 4 lần so với ViT-B/32.
-  - Tầng nén tuyến tính đưa về vector biểu diễn giải phẫu sâu **25 chiều**.
+  - **Mở rộng nút thắt cổ chai (`768 -> 256 -> 128`) & Cân bằng phân phối**: Đầu ra được chiếu về **128 chiều** kết thúc bằng `LayerNorm(128)` (đồng bộ thang đo phân phối với nhánh `VisualProjection`), tăng gấp 5 lần dung lượng biểu diễn so với mốc 25D cũ để truyền tải trọn vẹn thông tin từ 196 patch tokens.
 
-### 3.4. Ghép nối Vector Đặc trưng Toàn phần (544D Multimodal Vector)
-Toàn bộ đặc trưng được chuẩn hóa L2 và nối tiếp trực tiếp (concatenation) tạo thành vector biểu diễn hoàn chỉnh:
-$$\mathbf{f}_{544} = [\mathbf{v}_{512} \;\parallel\; \mathbf{s}_{7} \;\parallel\; \mathbf{a}_{25}] \in \mathbb{R}^{544}$$
+### 3.4. Ghép nối Vector Đặc trưng Toàn phần (647D Multimodal Vector)
+Toàn bộ đặc trưng được nối tiếp trực tiếp (concatenation) tạo thành vector biểu diễn hoàn chỉnh:
+$$\mathbf{f}_{647} = [\mathbf{v}_{512} \;\parallel\; \mathbf{s}_{7} \;\parallel\; \mathbf{a}_{128}] \in \mathbb{R}^{647}$$
 
 ---
 
@@ -128,14 +128,14 @@ $$\mathbf{f}_{544} = [\mathbf{v}_{512} \;\parallel\; \mathbf{s}_{7} \;\parallel\
 Hệ thống sử dụng duy nhất mô hình mạng nơ-ron **`Baseline EmotionMLP`** làm Classification Head:
 
 ```
-Input (544D) ──> [Linear(544->512) + BatchNorm1d(512) + LeakyReLU(0.1) + Dropout(0.3)]
+Input (647D) ──> [Linear(647->512) + BatchNorm1d(512) + LeakyReLU(0.1) + Dropout(0.3)]
              ──> [Linear(512->256) + BatchNorm1d(256) + LeakyReLU(0.1) + Dropout(0.3)]
              ──> [Linear(256->7)] ──> Softmax (7 Cảm xúc)
 ```
 
 **Cơ sở khoa học của việc lựa chọn Baseline EmotionMLP thay vì Residual MLP:**
-1. **Dung lượng mô hình tối ưu (Parameter Efficiency):** Không gian đặc trưng 544D đã được tiền cô đọng và ngữ nghĩa hóa cao độ qua ViT + Visual Projection + Facial Cross-Attention. Mạng 3 tầng với BatchNorm1d và Dropout(0.3) có dung lượng vừa đủ, tránh tình trạng thừa tham số và học vẹt các nhiễu cục bộ của các khối Residual sâu.
-2. **Bảo toàn tính đơn điệu của biên quyết định:** Không sử dụng skip-connections tránh việc cộng gộp chênh lệch thang đo giữa nhánh thị giác (512D) và nhánh hình học (32D), giúp bề mặt loss mượt mà hơn.
+1. **Dung lượng mô hình tối ưu (Parameter Efficiency):** Không gian đặc trưng 647D đã được tiền cô đọng và ngữ nghĩa hóa cao độ qua ViT + Visual Projection + Facial Cross-Attention. Mạng 3 tầng với BatchNorm1d và Dropout(0.3) có dung lượng vừa đủ, tránh tình trạng thừa tham số và học vẹt các nhiễu cục bộ của các khối Residual sâu.
+2. **Bảo toàn tính đơn điệu của biên quyết định:** Không sử dụng skip-connections tránh việc cộng gộp chênh lệch thang đo giữa nhánh thị giác (512D) và nhánh giải phẫu sâu (128D), giúp bề mặt loss mượt mà hơn.
 3. **Thực nghiệm chứng minh:** Trên tập chuẩn RAF-DB, Baseline EmotionMLP đạt **86.99% Accuracy** và **79.11% Macro-F1**, vượt trội hơn EmotionResMLP (86.90% / 78.56%) và các bộ phân loại tổ hợp (Ensemble).
 4. **Hàm mất mát Focal Loss:** Huấn luyện với $\gamma = 1.5$ và `label_smoothing = 0.05` giúp mô hình tập trung vào các mẫu khó phân loại và cân bằng phân phối giữa các lớp cảm xúc.
 
@@ -212,25 +212,25 @@ Emotion_Concentration/
 │
 ├── backend/                                 # Server & Lõi Xử Lý Trí Tuệ Nhân Tạo
 │   ├── main.py                              # FastAPI Web Server, REST API & Lifecycle Events
-│   ├── pipeline.py                          # EmotionPipeline Singleton (End-to-End Inference 544D)
+│   ├── pipeline.py                          # EmotionPipeline Singleton (End-to-End Inference 647D)
 │   ├── session_tracker.py                   # Bộ ghi nhận phiên học, tính điểm & xuất Excel (.xlsx)
 │   ├── temporal_tracker.py                  # Thuật toán theo dõi đa khuôn mặt, EMA & Hysteresis
 │   ├── requirements.txt                     # Danh mục thư viện Python dependencies
 │   ├── face_landmarker.task                 # Trọng số nhị phân MediaPipe FaceLandmarker
 │   ├── fer_descriptions.json                # Từ điển Prompt Ensembling mô tả 7 cảm xúc
-│   ├── emotion_mlp_weights.pth              # Trọng số Baseline EmotionMLP 544D chuẩn (kèm alias .pth)
+│   ├── emotion_mlp_weights.pth              # Trọng số Baseline EmotionMLP 647D chuẩn (kèm alias .pth)
 │   ├── sessions_history.json                # Cơ sở dữ liệu JSON lưu trữ các buổi học quá khứ
 │   │
 │   ├── dataset/                             # Module Quản Lý & Tiền Xử Lý Dữ Liệu
 │   │   ├── dataset_loader.py                # DataLoader cho RAF-DB, KMU-FED, new_data
-│   │   ├── dataset_preprocessor.py          # MultiDatasetPreprocessor (Trích xuất & cache 544D)
+│   │   ├── dataset_preprocessor.py          # MultiDatasetPreprocessor (Trích xuất & cache 647D)
 │   │   └── preprocess_features.py           # Bộ trích xuất RealCLIVP_FER đa mô thức
 │   │
 │   ├── models/                              # Kiến Trúc Mạng Nơ-ron & Toán Tử Học Sâu
 │   │   ├── clip_lora.py                     # Tiêm LoRA vào CLIP ViT Blocks 4-11
-│   │   ├── facial_cross_attention.py        # DETR-style Learnable Facial Query Cross-Attention
+│   │   ├── facial_cross_attention.py        # DETR-style Learnable Facial Query Cross-Attention (128D)
 │   │   ├── visual_projection.py             # Residual Visual Projection 512D
-│   │   ├── mlp.py                           # Kiến trúc Baseline EmotionMLP (544D Input)
+│   │   ├── mlp.py                           # Kiến trúc Baseline EmotionMLP (647D Input)
 │   │   ├── resmlp.py                        # Kiến trúc mạng sâu EmotionResMLP (Tương thích ngược)
 │   │   ├── clip_finetuned_best.pth          # Trọng số CLIP Backbone tinh chỉnh tốt nhất
 │   │   ├── facial_cross_attn_best.pth       # Trọng số Facial Cross-Attention tốt nhất
@@ -242,8 +242,8 @@ Emotion_Concentration/
 │   └── evaluation/                          # Huấn Luyện & Đánh Giá Benchmark Toàn Diện
 │       ├── run_complete_pipeline.py         # Pipeline 1-click: Train ViT-B/16 True End-to-End
 │       ├── train_lora.py                    # Huấn luyện CLIP LoRA với Focal Loss & Warmup
-│       ├── train_ensemble.py                # Huấn luyện độc lập Baseline EmotionMLP trên 544D
-│       └── benchmark.py                     # Đánh giá Accuracy, F1, Confusion Matrix trên 544D
+│       ├── train_ensemble.py                # Huấn luyện độc lập Baseline EmotionMLP trên 647D
+│       └── benchmark.py                     # Đánh giá Accuracy, F1, Confusion Matrix trên 647D
 │
 └── frontend/                                # Ứng Dụng Web Client Giám Sát Thời Gian Thực
     ├── package.json                         # Node.js dependencies (React 18, Vite, Tailwind)
@@ -326,7 +326,7 @@ Các cờ tùy chọn nâng cao:
 ### 8.2. Chi tiết Cơ Chế Huấn luyện Đồng bộ
 1. **Khởi tạo Backbone ViT-B/16**: Nạp CLIP ViT-B/16, đóng băng các tầng 0–3, tiêm LoRA vào Query/Value/MLP của các tầng 4–11.
 2. **Khởi tạo Facial Query Cross-Attention**: 32 Facial Queries truy vấn vào **196 patch tokens** của tầng 11.
-3. **Khởi tạo Baseline EmotionMLP Head**: Mạng nơ-ron 3 tầng (544D -> 512 -> 256 -> 7) với BatchNorm1d và Dropout(0.3).
+3. **Khởi tạo Baseline EmotionMLP Head**: Mạng nơ-ron 3 tầng (647D -> 512 -> 256 -> 7) với BatchNorm1d và Dropout(0.3).
 4. **Lan truyền ngược đồng bộ (Joint Optimization)**:
    - Gradient chảy xuyên suốt qua toàn bộ mạng.
    - Khi phá vỡ kỷ lục Val Macro-F1, toàn bộ các file trọng số (`clip_finetuned_best.pth`, `facial_cross_attn_best.pth`, `visual_proj_best.pth`, `emotion_mlp_weights.pth`) được xuất ra đồng bộ.
@@ -373,7 +373,7 @@ Truy cập giao diện Web Dashboard tại: `http://localhost:5173`.
 
 | Phương thức | Đường dẫn Endpoint | Mô tả chức năng |
 | :--- | :--- | :--- |
-| `POST` | `/analyze_emotion` | Phân tích cảm xúc & độ tập trung cho khung hình từ luồng video thời gian thực trên không gian 544D bằng Baseline EmotionMLP. Hỗ trợ theo dõi chuỗi phiên học (Session). |
+| `POST` | `/analyze_emotion` | Phân tích cảm xúc & độ tập trung cho khung hình từ luồng video thời gian thực trên không gian 647D bằng Baseline EmotionMLP. Hỗ trợ theo dõi chuỗi phiên học (Session). |
 | `POST` | `/analyze_single_frame` | Endpoint độc lập phân tích cảm xúc cho một bức ảnh tĩnh tải lên (không ảnh hưởng tới trạng thái session đang chạy). |
 | `POST` | `/session/start` | Bắt đầu một phiên học mới, reset các tracker thời gian. |
 | `GET` | `/session/current` | Lấy phần trăm cảm xúc tích lũy, số lượng khuôn mặt hiện diện và điểm tập trung thời gian thực. |

@@ -1,7 +1,7 @@
 """
 EduFocus AI — Huấn Luyện & Đánh Giá Mô Hình Baseline EmotionMLP
-Sử dụng thuần 1 mình Baseline EmotionMLP trên không gian 544D toàn phần (512D Visual + 32D Hình học/Ngữ nghĩa).
-Đã được chứng minh thực nghiệm đạt 86.99% Acc / 79.11% F1 trên RAF-DB, vượt trội hơn Residual MLP.
+Sử dụng thuần 1 mình Baseline EmotionMLP trên không gian 647D toàn phần (512D Visual + 7D Text + 128D Facial Cross-Attention).
+Đã được chứng minh thực nghiệm đạt 86.99% Acc / 79.11% F1 trên RAF-DB (với 544D ViT-B/32), vượt trội hơn Residual MLP.
 """
 
 import sys
@@ -141,7 +141,7 @@ def train_mlp_model(
 
 def evaluate_dataset(dataset_name: str, epochs: int = 100):
     print("\n" + "=" * 80)
-    print(f"🔥 HUẤN LUYỆN & ĐÁNH GIÁ MÔ HÌNH BASELINE EMOTIONMLP [{dataset_name.upper()}] TRÊN 544D")
+    print(f"🔥 HUẤN LUYỆN & ĐÁNH GIÁ MÔ HÌNH BASELINE EMOTIONMLP [{dataset_name.upper()}]")
     print("=" * 80)
 
     cache_file = os.path.join(BACKEND_DIR, f"cache_{dataset_name.lower()}.npz")
@@ -167,7 +167,7 @@ def evaluate_dataset(dataset_name: str, epochs: int = 100):
     print(f"  - Kích thước tập Train: {X_train.shape[0]} mẫu")
     print(f"  - Kích thước tập Val: {X_val.shape[0]} mẫu")
     print(f"  - Kích thước tập Test: {X_test.shape[0]} mẫu")
-    print(f"  - Không gian đặc trưng: {feature_dim} chiều (Full 544D)")
+    print(f"  - Không gian đặc trưng: {feature_dim} chiều (Multimodal Full)")
     print(f"  - Thiết bị tính toán: {device}")
 
     # Khởi tạo mô hình Baseline EmotionMLP
@@ -228,7 +228,7 @@ def evaluate_dataset(dataset_name: str, epochs: int = 100):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Huấn luyện Baseline EmotionMLP trên 544D")
+    parser = argparse.ArgumentParser(description="Huấn luyện Baseline EmotionMLP trên không gian Multimodal")
     parser.add_argument("--datasets", nargs="+", default=["new_data"], help="Danh sách dataset (Mặc định: new_data)")
     parser.add_argument("--epochs", type=int, default=100, help="Số epochs huấn luyện (Mặc định: 100)")
     args = parser.parse_args()

@@ -101,11 +101,11 @@ class EmotionPipeline:
         vproj_path = os.path.join(os.path.dirname(__file__), "models", "visual_proj_best.pth")
         if os.path.exists(fca_path):
             try:
-                self.facial_cross_attn = FacialQueryCrossAttention(
-                    embed_dim=768, num_queries=32, num_heads=8, num_layers=2, out_dim=25
+                fca_sd = torch.load(fca_path, map_location=self.device, weights_only=True)
+                self.facial_cross_attn = FacialQueryCrossAttention.from_state_dict(
+                    fca_sd, embed_dim=768, num_queries=32, num_heads=8, num_layers=2
                 ).to(self.device).eval()
-                self.facial_cross_attn.load_state_dict(torch.load(fca_path, map_location=self.device, weights_only=True))
-                print(f"[AI] ✅ Đã nạp thành công FacialQueryCrossAttention từ: {os.path.basename(fca_path)}")
+                print(f"[AI] ✅ Đã nạp thành công FacialQueryCrossAttention ({self.facial_cross_attn.out_dim}D) từ: {os.path.basename(fca_path)}")
             except Exception as e:
                 print(f"[AI] Cảnh báo không thể nạp FacialQueryCrossAttention: {e}")
 
@@ -128,14 +128,15 @@ class EmotionPipeline:
         print("[AI] Đang nạp RetinaFace Model...")
         self.retinaface_model = RetinaFace.build_model()
 
-        # 3. Kích thước không gian đặc trưng đa mô thức thuần nhất (544D)
-        self.feature_dim = 544
+        # 3. Kích thước không gian đặc trưng đa mô thức thuần nhất (647D với Facial CA 128D, hoặc tương thích 544D cũ)
+        facial_dim = self.facial_cross_attn.out_dim if self.facial_cross_attn is not None else 128
+        self.feature_dim = 512 + 7 + facial_dim
 
         # 4. Tìm nhãn (labels mapping 7 lớp chuẩn từ new_data)
         emotions = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
         self.idx_to_label = {idx: label for idx, label in enumerate(emotions)}
 
-        # 5. Load Baseline EmotionMLP Classifier trực tiếp trên 544D toàn phần
+        # 5. Load Baseline EmotionMLP Classifier trực tiếp trên 647D toàn phần
         mlp_path = os.path.join(os.path.dirname(__file__), "emotion_mlp_weights.pth")
         resmlp_path = os.path.join(os.path.dirname(__file__), "emotion_resmlp_weights.pth")
 
@@ -146,13 +147,15 @@ class EmotionPipeline:
             try:
                 sd = torch.load(chosen_weights_path, map_location=self.device, weights_only=True)
                 if "res1.fc1.weight" in sd:
-                    self.classifier = EmotionResMLP(input_dim=self.feature_dim, num_classes=len(emotions)).to(self.device)
+                    ckpt_in_dim = int(sd["input_layer.0.weight"].shape[1]) if "input_layer.0.weight" in sd else self.feature_dim
+                    self.classifier = EmotionResMLP(input_dim=ckpt_in_dim, num_classes=len(emotions)).to(self.device)
                     self.classifier.load_state_dict(sd)
-                    print(f"[AI] ✅ Đã nạp thành công EmotionResMLP từ: {os.path.basename(chosen_weights_path)}")
+                    print(f"[AI] ✅ Đã nạp thành công EmotionResMLP ({ckpt_in_dim}D) từ: {os.path.basename(chosen_weights_path)}")
                 else:
-                    self.classifier = EmotionMLP(input_dim=self.feature_dim, num_classes=len(emotions)).to(self.device)
+                    ckpt_in_dim = int(sd["fc1.weight"].shape[1]) if "fc1.weight" in sd else self.feature_dim
+                    self.classifier = EmotionMLP(input_dim=ckpt_in_dim, num_classes=len(emotions)).to(self.device)
                     self.classifier.load_state_dict(sd)
-                    print(f"[AI] ✅ Đã nạp thành công Baseline EmotionMLP từ: {os.path.basename(chosen_weights_path)}")
+                    print(f"[AI] ✅ Đã nạp thành công Baseline EmotionMLP ({ckpt_in_dim}D) từ: {os.path.basename(chosen_weights_path)}")
             except Exception as e:
                 print(f"[AI] Cảnh báo không thể nạp classifier weights ({e}), khởi tạo Baseline EmotionMLP mặc định...")
                 self.classifier = EmotionMLP(input_dim=self.feature_dim, num_classes=len(emotions)).to(self.device)
@@ -183,16 +186,16 @@ class EmotionPipeline:
         self, final_face_img: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Trích xuất vector đặc trưng đa mô thức chuẩn 544D:
-        [512D Visual Proj + 7D CLIP Text Similarity + 25D Facial Query Cross-Attention]
-        đồng bộ 100% với train_sequential_unfreeze và dataset_preprocessor.
+        Trích xuất vector đặc trưng đa mô thức chuẩn 647D:
+        [512D Visual Proj + 7D CLIP Text Similarity + 128D Facial Query Cross-Attention]
+        đồng bộ 100% với train_lora và dataset_preprocessor.
 
         Đồng thời trích xuất landmark_vector (25D) qua MediaPipe CPU để phục vụ:
         - TemporalFaceTracker / IoU & Speaking detection (is_student_speaking)
         - Upper-Face Gating (ngăn nhầm lẫn há miệng nói chuyện thành Surprise)
 
         Returns:
-            feature_vector (544D np.ndarray): Vector đặc trưng đầu vào cho EPSO & Ensemble Head
+            feature_vector (647D np.ndarray): Vector đặc trưng đầu vào cho Baseline EmotionMLP
             clip_vector (512D np.ndarray): Embedding khuôn mặt phục vụ tracking/nhận diện
             landmark_vector (25D np.ndarray): Vector tỷ lệ mốc hình học mặt phục vụ Upper-Face Gating
         """
@@ -233,7 +236,7 @@ class EmotionPipeline:
                 h_facial = self.facial_cross_attn(patch_tokens).squeeze(0).cpu().numpy()
                 h_vis_np = h_vis.squeeze(0).cpu().numpy()
 
-                feature_vector = np.concatenate([h_vis_np, prompt_sims, h_facial])  # (544,)
+                feature_vector = np.concatenate([h_vis_np, prompt_sims, h_facial])  # (647,)
                 clip_vector = img_norm.squeeze(0).cpu().numpy()
             else:
                 # Fallback nếu chưa nạp được Facial Cross-Attention
@@ -246,7 +249,12 @@ class EmotionPipeline:
                     .numpy()
                 )
                 clip_vector = img_norm.squeeze(0).cpu().numpy()
-                feature_vector = np.concatenate([clip_vector, prompt_sims, landmark_vector])
+                raw_fallback = np.concatenate([clip_vector, prompt_sims, landmark_vector])
+                if len(raw_fallback) < self.feature_dim:
+                    pad = np.zeros(self.feature_dim - len(raw_fallback), dtype=np.float32)
+                    feature_vector = np.concatenate([raw_fallback, pad])
+                else:
+                    feature_vector = raw_fallback[:self.feature_dim]
 
         return feature_vector, clip_vector, landmark_vector
 
@@ -585,14 +593,14 @@ class EmotionPipeline:
             )
             face_base64 = base64.b64encode(buffer).decode("utf-8")
 
-            # 3. Multimodal Feature Extraction (512D Visual + 7D Text + 25D Facial Cross-Attention = 544D)
+            # 3. Multimodal Feature Extraction (512D Visual + 7D Text + 128D Facial Cross-Attention = 647D)
             t3_start = time.time()
             feature_vector, clip_vector, landmark_vector = self.extract_multimodal_features(
                 final_face_img
             )
             stage3_total_time += time.time() - t3_start
 
-            # 4. Emotion Classification (Baseline EmotionMLP trên 544D toàn phần)
+            # 4. Emotion Classification (Baseline EmotionMLP trên {self.feature_dim}D toàn phần)
             t5_start = time.time()
             probs_arr = self.classifier.predict_probs(feature_vector)
 
@@ -670,16 +678,16 @@ class EmotionPipeline:
 
         logs.append(
             {
-                "stage": "Feature Extraction (544D Multimodal)",
+                "stage": f"Feature Extraction ({self.feature_dim}D Multimodal)",
                 "latency_ms": round(stage3_total_time * 1000, 2),
-                "message": f"Đã trích xuất 544D (CLIP + Prompt + MediaPipe AU) cho {len(faces_list)} khuôn mặt",
+                "message": f"Đã trích xuất {self.feature_dim}D (CLIP + Prompt + Facial Cross-Attention) cho {len(faces_list)} khuôn mặt",
             }
         )
         logs.append(
             {
                 "stage": "Emotion Classification (Baseline EmotionMLP)",
                 "latency_ms": round(stage5_total_time * 1000, 2),
-                "message": "Hoàn tất phân loại bằng Baseline EmotionMLP trên 544D toàn phần",
+                "message": f"Hoàn tất phân loại bằng Baseline EmotionMLP trên {self.feature_dim}D toàn phần",
             }
         )
 
@@ -798,21 +806,14 @@ class EmotionPipeline:
         if len(faces_data) == 0:
             logs.append(
                 {
-                    "stage": "Feature Extraction (544D Multimodal)",
+                    "stage": f"Feature Extraction ({self.feature_dim}D Multimodal)",
                     "latency_ms": 0,
                     "message": "Bỏ qua (Không phát hiện thấy khuôn mặt trong ảnh)",
                 }
             )
             logs.append(
                 {
-                    "stage": "Feature Selection (EPSO 289D)",
-                    "latency_ms": 0,
-                    "message": "Bỏ qua (Không phát hiện thấy khuôn mặt trong ảnh)",
-                }
-            )
-            logs.append(
-                {
-                    "stage": "Emotion Classification (Ensemble Head)",
+                    "stage": "Emotion Classification (Baseline EmotionMLP)",
                     "latency_ms": 0,
                     "message": "Bỏ qua (Không phát hiện thấy khuôn mặt trong ảnh)",
                 }
@@ -892,14 +893,14 @@ class EmotionPipeline:
                 )
                 face_base64 = base64.b64encode(buffer).decode("utf-8")
 
-                # 3. Multimodal Feature Extraction (512D Visual + 7D Text + 25D Facial Cross-Attention = 544D)
+                # 3. Multimodal Feature Extraction (512D Visual + 7D Text + 128D Facial Cross-Attention = 647D)
                 t3_start = time.time()
                 feature_vector, clip_vector, landmark_vector = self.extract_multimodal_features(
                     final_face_img
                 )
                 stage3_total_time += time.time() - t3_start
 
-                # 4. Emotion Classification (Baseline EmotionMLP trên 544D)
+                # 4. Emotion Classification (Baseline EmotionMLP trên 647D)
                 t5_start = time.time()
                 probs_arr = self.classifier.predict_probs(feature_vector)
 
@@ -964,16 +965,16 @@ class EmotionPipeline:
 
         logs.append(
             {
-                "stage": "Feature Extraction (544D Multimodal)",
+                "stage": f"Feature Extraction ({self.feature_dim}D Multimodal)",
                 "latency_ms": round(stage3_total_time * 1000, 2),
-                "message": f"Đã trích xuất 544D (CLIP + Prompt + MediaPipe AU) cho {len(faces_list)} khuôn mặt",
+                "message": f"Đã trích xuất {self.feature_dim}D (CLIP + Prompt + Facial Cross-Attention) cho {len(faces_list)} khuôn mặt",
             }
         )
         logs.append(
             {
                 "stage": "Emotion Classification (Baseline EmotionMLP)",
                 "latency_ms": round(stage5_total_time * 1000, 2),
-                "message": "Hoàn tất phân loại bằng Baseline EmotionMLP trên 544D toàn phần",
+                "message": f"Hoàn tất phân loại bằng Baseline EmotionMLP trên {self.feature_dim}D toàn phần",
             }
         )
 

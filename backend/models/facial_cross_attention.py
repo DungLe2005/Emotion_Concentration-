@@ -2,15 +2,15 @@
 Facial Query Cross-Attention Module for Emotion Recognition.
 
 Nâng cấp Hướng A (DETR-style Learnable Facial Keypoint Queries Cross-Attention):
-- 32 Learnable Queries (tăng từ 16) bao phủ chi tiết toàn bộ các vùng cơ mặt.
+- 32 Learnable Queries bao phủ chi tiết toàn bộ các vùng cơ mặt.
 - Stack 2 tầng Transformer Decoder:
   + Self-Attention giữa các Queries: Học quan hệ không gian/hình học tương quan giữa các vùng biểu cảm.
-  + Cross-Attention vào CLIP Patch Tokens: Truy vấn thông tin biến dạng biểu cảm từ 49 patches của CLIP ViT-B/32.
+  + Cross-Attention vào CLIP Patch Tokens: Truy vấn thông tin biến dạng biểu cảm từ 49 (ViT-B/32) hoặc 196 (ViT-B/16) patches của CLIP.
   + Feed-Forward Network (FFN) với GELU activation.
 - Kiến trúc Pre-LN (LayerNorm trước Attention/FFN) đảm bảo gradient flow cực kỳ ổn định, chống triệt để NaN overflow.
 - Attentive Query Pooling: Học trọng số quan trọng động của từng query thay vì mean pooling đơn thuần.
-- Chiếu ra 25D biểu diễn cấu trúc vi biểu cảm sâu (Deep Facial Deformation Representation).
-- Tổng kích thước đặc trưng giữ nguyên chuẩn 544D (512D Visual + 7D Text + 25D Facial CA), trực tiếp làm đầu vào cho Classifier Head.
+- Chiếu ra 128D biểu diễn cấu trúc vi biểu cảm sâu (Deep Facial Deformation Representation), mở rộng nút thắt cổ chai 25D trước đây.
+- Tổng kích thước đặc trưng chuẩn 647D (512D Visual + 7D Text + 128D Facial CA), trực tiếp làm đầu vào cho Classifier Head.
 """
 
 import torch
@@ -134,7 +134,7 @@ class FacialQueryCrossAttention(nn.Module):
     """
     Learnable Facial Keypoint Queries Cross-Attention Module (DETR-Style Decoder Stack).
 
-    32 Learnable Queries truy vấn vào 49 Patch Tokens của CLIP ViT để học
+    32 Learnable Queries truy vấn vào 49/196 Patch Tokens của CLIP ViT để học
     sự biến dạng của các vùng cơ mặt (chân mày, mắt, rãnh cười, môi, cằm)
     mà không cần bất kỳ điểm landmark thủ công nào từ MediaPipe.
     """
@@ -145,7 +145,7 @@ class FacialQueryCrossAttention(nn.Module):
         num_queries: int = 32,
         num_heads: int = 8,
         num_layers: int = 2,
-        out_dim: int = 25,
+        out_dim: int = 128,
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -173,24 +173,35 @@ class FacialQueryCrossAttention(nn.Module):
         # Attentive Query Pooling: Học trọng số quan trọng của từng query
         self.pool_attn = nn.Linear(embed_dim, 1)
 
-        # Chiếu xuống 25D để tương thích hoàn hảo chuẩn 544D multimodal
+        # Chiếu xuống out_dim (128D) với LayerNorm cuối cùng để cân bằng phân phối với VisualProjection (512D)
+        proj_hidden_dim = 256 if out_dim >= 64 else 128
         self.proj_head = nn.Sequential(
-            nn.Linear(embed_dim, 128),
-            nn.LayerNorm(128),
+            nn.Linear(embed_dim, proj_hidden_dim),
+            nn.LayerNorm(proj_hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(128, out_dim),
+            nn.Linear(proj_hidden_dim, out_dim),
             nn.LayerNorm(out_dim),
-            nn.GELU(),
         )
+
+    @classmethod
+    def from_state_dict(cls, state_dict: dict, **kwargs):
+        """Tự động nhận diện out_dim từ checkpoint (hỗ trợ cả 128D mới và 25D cũ)."""
+        if "proj_head.4.weight" in state_dict:
+            out_dim = int(state_dict["proj_head.4.weight"].shape[0])
+        else:
+            out_dim = kwargs.pop("out_dim", 128)
+        model = cls(out_dim=out_dim, **kwargs)
+        model.load_state_dict(state_dict)
+        return model
 
     def forward(self, patch_tokens: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            patch_tokens: Tensor [B, 49, 768] từ CLIP ViT
+            patch_tokens: Tensor [B, N_patches, 768] từ CLIP ViT
 
         Returns:
-            facial_features: Tensor [B, out_dim] (mặc định 25D)
+            facial_features: Tensor [B, out_dim] (mặc định 128D)
         """
         B = patch_tokens.shape[0]
 
@@ -207,6 +218,6 @@ class FacialQueryCrossAttention(nn.Module):
         attn_weights = F.softmax(self.pool_attn(q), dim=1)  # [B, 32, 1]
         x_pooled = torch.sum(q * attn_weights, dim=1)        # [B, 768]
 
-        # 4. Chiếu về 25D
-        facial_features = self.proj_head(x_pooled)  # [B, 25]
+        # 4. Chiếu về out_dim (mặc định 128D)
+        facial_features = self.proj_head(x_pooled)  # [B, 128]
         return facial_features

@@ -149,7 +149,7 @@ def main():
     python_exe = sys.executable
 
     print("      EDUFOCUS AI - QUY TRÌNH NÂNG CẤP ĐỘ CHÍNH XÁC TOÀN DIỆN")
-    print("      (CLIP LoRA Fine-Tuning -> 544D Feature Extraction -> Baseline EmotionMLP Classifier)")
+    print("      (CLIP LoRA Fine-Tuning -> 647D Feature Extraction -> Baseline EmotionMLP Classifier)")
     print(f"  - Dataset Mục Tiêu: {args.dataset}")
     print(f"  - Tổng Epochs Huấn Luyện: {args.epochs}")
     print(f"  - LoRA Target Blocks: {args.lora_blocks}")
@@ -221,7 +221,7 @@ def main():
     # BƯỚC 2: TRÍCH XUẤT ĐẶC TRƯNG VỚI BACKBONE ĐÃ FINE-TUNE
     print("\n" + "=" * 80)
     print(
-        "🚀 BƯỚC 2: TRÍCH XUẤT ĐẶC TRƯNG 544D VỚI CLIP FINE-TUNED VÀ FACIAL CROSS-ATTENTION (THUẦN GPU)"
+        "🚀 BƯỚC 2: TRÍCH XUẤT ĐẶC TRƯNG 647D VỚI CLIP FINE-TUNED VÀ FACIAL CROSS-ATTENTION (THUẦN GPU)"
     )
     print("=" * 80)
     cache_file = os.path.join(BACKEND_DIR, f"cache_{args.dataset.lower()}.npz")
@@ -230,15 +230,15 @@ def main():
         prep = MultiDatasetPreprocessor(device=torch.device(args.device))
         cache_out = prep.process_and_cache_dataset(args.dataset, force_reextract=True)
         prep.close()
-        print(f"✅ Đã tạo/cập nhật file cache đặc trưng 544D tại: {cache_out}")
+        print(f"✅ Đã tạo/cập nhật file cache đặc trưng 647D tại: {cache_out}")
     else:
-        print(f"✅ Đã có sẵn file cache đặc trưng 544D tại: {cache_file}")
+        print(f"✅ Đã có sẵn file cache đặc trưng 647D tại: {cache_file}")
 
-    # BƯỚC 3: HUẤN LUYỆN BASELINE EMOTIONMLP TRÊN 544D TOÀN PHẦN
+    # BƯỚC 3: HUẤN LUYỆN BASELINE EMOTIONMLP TRÊN 647D TOÀN PHẦN
     classifier_script = os.path.join(BACKEND_DIR, "evaluation", "train_ensemble.py")
     cmd_classifier = [python_exe, "-u", classifier_script, "--datasets", args.dataset]
     run_step(
-        "3. Huấn Luyện & Đánh Giá Mô Hình Baseline EmotionMLP Trên 544D Toàn Phần",
+        "3. Huấn Luyện & Đánh Giá Mô Hình Baseline EmotionMLP Trên 647D Toàn Phần",
         cmd_classifier,
     )
 

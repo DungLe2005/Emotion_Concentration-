@@ -5,19 +5,18 @@ import numpy as np
 
 class EmotionMLP(nn.Module):
     """
-    Baseline EmotionMLP Classifier cho vector đặc trưng đa mô thức (544D).
+    Baseline EmotionMLP Classifier cho vector đặc trưng đa mô thức (647D).
     
     Cấu trúc:
-    - Input: 544 chiều (512D visual đã qua Visual Projection + 32D hình học MediaPipe)
-    - Tầng 1: Linear(544 -> 512) + BatchNorm1d(512) + LeakyReLU(0.1) + Dropout(0.3)
+    - Input: 647 chiều (512D Visual Proj + 7D Text Similarity + 128D Facial Query Cross-Attention)
+    - Tầng 1: Linear(647 -> 512) + BatchNorm1d(512) + LeakyReLU(0.1) + Dropout(0.3)
     - Tầng 2: Linear(512 -> 256) + BatchNorm1d(256) + LeakyReLU(0.1) + Dropout(0.3)
     - Tầng 3: Linear(256 -> num_classes=7)
     
-    Mô hình đã được thực nghiệm chứng minh trên tập RAF-DB đạt Accuracy 86.99% và
-    Macro F1 79.11%, vượt trội hơn kiến trúc Residual (86.90% / 78.56%) và các bộ
-    phân loại tổ hợp phức tạp nhờ khả năng tổng quát hóa cao và tránh overfitting.
+    Mô hình đã được thực nghiệm chứng minh trên tập RAF-DB vượt trội hơn kiến trúc
+    Residual và các bộ phân loại tổ hợp phức tạp nhờ khả năng tổng quát hóa cao và tránh overfitting.
     """
-    def __init__(self, input_dim=544, num_classes=7):
+    def __init__(self, input_dim=647, num_classes=7):
         super(EmotionMLP, self).__init__()
         self.input_dim = input_dim
         self.num_classes = num_classes
