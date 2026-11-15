@@ -9,6 +9,14 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
+# Các thư mục quản lý tập trung tài nguyên
+WEIGHTS_DIR = os.path.join(BACKEND_DIR, "weights")
+CACHE_DIR = os.path.join(BACKEND_DIR, "cache")
+REPORTS_DIR = os.path.join(BACKEND_DIR, "reports")
+os.makedirs(WEIGHTS_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(REPORTS_DIR, exist_ok=True)
+
 # Cấu hình cache an toàn cho matplotlib trên Windows
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(BACKEND_DIR, ".tmp_mpl"))
 
@@ -105,6 +113,18 @@ def main():
         action="store_true",
         help="Bỏ qua bước huấn luyện fine-tune nếu đã có weights",
     )
+    default_workers = 2 if sys.platform != "win32" else 0
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=default_workers,
+        help=f"Số workers nạp dữ liệu (Mặc định: {default_workers})",
+    )
+    parser.add_argument(
+        "--preload_ram",
+        action="store_true",
+        help="Nạp trước toàn bộ ảnh vào RAM để triệt tiêu thời gian I/O đĩa (Khuyên dùng cho Colab)",
+    )
     parser.add_argument(
         "--dry_run",
         action="store_true",
@@ -200,7 +220,11 @@ def main():
             str(args.val_ratio),
             "--clip_variant",
             args.clip_variant,
+            "--workers",
+            str(args.workers),
         ]
+        if args.preload_ram:
+            cmd_lora.append("--preload_ram")
         if args.dry_run:
             cmd_lora.append("--dry_run")
         if args.fp16:
@@ -224,7 +248,11 @@ def main():
         "🚀 BƯỚC 2: TRÍCH XUẤT ĐẶC TRƯNG 647D VỚI CLIP FINE-TUNED VÀ FACIAL CROSS-ATTENTION (THUẦN GPU)"
     )
     print("=" * 80)
-    cache_file = os.path.join(BACKEND_DIR, f"cache_{args.dataset.lower()}.npz")
+    cache_file = os.path.join(CACHE_DIR, f"cache_{args.dataset.lower()}.npz")
+    if not os.path.exists(cache_file):
+        legacy_cache = os.path.join(BACKEND_DIR, f"cache_{args.dataset.lower()}.npz")
+        if os.path.exists(legacy_cache):
+            cache_file = legacy_cache
     need_reextract = (not args.skip_unfreeze) or (not os.path.exists(cache_file))
     if need_reextract:
         prep = MultiDatasetPreprocessor(device=torch.device(args.device))

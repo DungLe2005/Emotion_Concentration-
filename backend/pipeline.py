@@ -67,10 +67,20 @@ class EmotionPipeline:
 
         # 2. Khởi tạo CLIP (ViT-B/16 mặc định, tự động nhận diện ViT-B/32 nếu checkpoint cũ)
         import clip
-        finetuned_clip_path = os.path.join(os.path.dirname(__file__), "models", "clip_finetuned_best.pth")
+        weights_dir = os.path.join(os.path.dirname(__file__), "weights")
+        models_dir = os.path.join(os.path.dirname(__file__), "models")
+
+        def find_weight(filename: str) -> Optional[str]:
+            for d in [weights_dir, models_dir, os.path.dirname(__file__)]:
+                p = os.path.join(d, filename)
+                if os.path.exists(p):
+                    return p
+            return None
+
+        finetuned_clip_path = find_weight("clip_finetuned_best.pth")
         clip_variant = "ViT-B/16"
         loaded_sd = None
-        if os.path.exists(finetuned_clip_path):
+        if finetuned_clip_path and os.path.exists(finetuned_clip_path):
             try:
                 loaded_sd = torch.load(finetuned_clip_path, map_location=self.device, weights_only=True)
                 patch_w = loaded_sd.get("visual.conv1.weight", None)
@@ -97,8 +107,8 @@ class EmotionPipeline:
         # 2.05 Nạp FacialQueryCrossAttention & VisualProjection nếu có
         self.facial_cross_attn = None
         self.visual_proj = None
-        fca_path = os.path.join(os.path.dirname(__file__), "models", "facial_cross_attn_best.pth")
-        vproj_path = os.path.join(os.path.dirname(__file__), "models", "visual_proj_best.pth")
+        fca_path = find_weight("facial_cross_attn_best.pth")
+        vproj_path = find_weight("visual_proj_best.pth")
         if os.path.exists(fca_path):
             try:
                 fca_sd = torch.load(fca_path, map_location=self.device, weights_only=True)
@@ -137,11 +147,7 @@ class EmotionPipeline:
         self.idx_to_label = {idx: label for idx, label in enumerate(emotions)}
 
         # 5. Load Baseline EmotionMLP Classifier trực tiếp trên 647D toàn phần
-        mlp_path = os.path.join(os.path.dirname(__file__), "emotion_mlp_weights.pth")
-        resmlp_path = os.path.join(os.path.dirname(__file__), "emotion_resmlp_weights.pth")
-
-        # Xác định file trọng số khả dụng (ưu tiên emotion_mlp_weights.pth)
-        chosen_weights_path = mlp_path if os.path.exists(mlp_path) else (resmlp_path if os.path.exists(resmlp_path) else None)
+        chosen_weights_path = find_weight("emotion_mlp_weights.pth") or find_weight("emotion_resmlp_weights.pth")
 
         if chosen_weights_path is not None:
             try:

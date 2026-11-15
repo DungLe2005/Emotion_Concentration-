@@ -44,6 +44,12 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
+# Thư mục quản lý tập trung trọng số (weights) và báo cáo (reports)
+WEIGHTS_DIR = os.path.join(BACKEND_DIR, "weights")
+REPORTS_DIR = os.path.join(BACKEND_DIR, "reports")
+os.makedirs(WEIGHTS_DIR, exist_ok=True)
+os.makedirs(REPORTS_DIR, exist_ok=True)
+
 import clip
 from dataset.dataset_loader import (
     DatasetRegistry,
@@ -343,7 +349,9 @@ def load_clip_backbone(variant: str = "ViT-B/16", device: str = "cuda") -> nn.Mo
     - Ngược lại: gọi clip.load (nạp từ cache hoặc tải về).
     """
     expected_patch_size = 16 if "16" in variant else 32
-    local_pth = os.path.join(BACKEND_DIR, "models", "clip_finetuned_best.pth")
+    local_pth = os.path.join(WEIGHTS_DIR, "clip_finetuned_best.pth")
+    if not os.path.exists(local_pth):
+        local_pth = os.path.join(BACKEND_DIR, "models", "clip_finetuned_best.pth")
     if os.path.exists(local_pth):
         try:
             sd = torch.load(local_pth, map_location=device, weights_only=False)
@@ -528,25 +536,99 @@ def run_training(args):
     # Resume checkpoint nếu được yêu cầu
     start_epoch = 1
     best_val_f1 = 0.0
+    patience_counter = 0
     if args.resume:
-        resume_dir = args.resume_dir or os.path.join(BACKEND_DIR, "..", "resume")
-        resume_pth = os.path.join(resume_dir, args.resume_file or "lora_best.pth")
-        if os.path.exists(resume_pth):
-            print(f"\n🔄 Tiến hành Resume từ Checkpoint: {resume_pth}")
-            ckpt = torch.load(resume_pth, map_location=device, weights_only=False)
-            if "lora_state_dict" in ckpt:
-                load_lora_state_dict(model.clip, ckpt["lora_state_dict"])
-            if "visual_proj" in ckpt:
-                model.visual_proj.load_state_dict(ckpt["visual_proj"])
-            if "facial_cross_attn" in ckpt:
-                model.facial_cross_attn.load_state_dict(ckpt["facial_cross_attn"])
-            if "head" in ckpt:
-                model.head.load_state_dict(ckpt["head"])
-            if "optimizer" in ckpt:
-                optimizer.load_state_dict(ckpt["optimizer"])
-            start_epoch = ckpt.get("epoch", 1) + 1
-            best_val_f1 = ckpt.get("val_f1", 0.0)
-            print(f"  ✅ Đã nạp thành công! Bắt đầu từ Epoch {start_epoch}, Best Val F1: {best_val_f1:.4f}")
+        resume_candidates = []
+        if args.resume_file:
+            if args.resume_dir:
+                resume_candidates.append(os.path.join(args.resume_dir, args.resume_file))
+            resume_candidates.extend([
+                os.path.join(BACKEND_DIR, "..", "resume", args.resume_file),
+                os.path.join(args.save_dir, args.resume_file),
+                os.path.join("/content/drive/MyDrive/edufocus_weights_rafdb", args.resume_file),
+            ])
+        else:
+            if args.resume_dir:
+                resume_candidates.extend([
+                    os.path.join(args.resume_dir, "lora_last.pth"),
+                    os.path.join(args.resume_dir, "lora_best.pth"),
+                ])
+            resume_candidates.extend([
+                os.path.join(WEIGHTS_DIR, "lora_last.pth"),
+                os.path.join(WEIGHTS_DIR, "lora_best.pth"),
+                os.path.join(BACKEND_DIR, "..", "resume", "lora_last.pth"),
+                os.path.join(args.save_dir, "lora_last.pth"),
+                os.path.join("/content/drive/MyDrive/edufocus_weights_rafdb", "lora_last.pth"),
+                os.path.join(BACKEND_DIR, "..", "resume", "lora_best.pth"),
+                os.path.join(args.save_dir, "lora_best.pth"),
+                os.path.join("/content/drive/MyDrive/edufocus_weights_rafdb", "lora_best.pth"),
+            ])
+
+        found_ckpt = None
+        for p in resume_candidates:
+            if p and os.path.exists(p):
+                found_ckpt = p
+                break
+
+        if found_ckpt:
+            print(f"\n🔄 Tiến hành Resume từ Checkpoint: {found_ckpt}")
+            try:
+                ckpt = torch.load(found_ckpt, map_location=device, weights_only=False)
+                if "lora_state_dict" in ckpt:
+                    load_lora_state_dict(model.clip, ckpt["lora_state_dict"])
+                    print("  ✅ Đã phục hồi LoRA weights.")
+                elif "model_state_dict" in ckpt:
+                    print("  ⚠️ Cảnh báo: Checkpoint chứa 'model_state_dict' (phiên bản cũ sequential unfreeze), không phải LoRA!")
+
+                if "visual_proj" in ckpt:
+                    try:
+                        model.visual_proj.load_state_dict(ckpt["visual_proj"])
+                        print("  ✅ Đã phục hồi VisualProjection.")
+                    except Exception as e:
+                        print(f"  ⚠️ Không thể nạp VisualProjection ({e})")
+                if "facial_cross_attn" in ckpt:
+                    try:
+                        model.facial_cross_attn.load_state_dict(ckpt["facial_cross_attn"])
+                        print("  ✅ Đã phục hồi FacialQueryCrossAttention.")
+                    except Exception as e:
+                        print(f"  ⚠️ Checkpoint có kích thước FacialCrossAttn cũ không khớp kiến trúc 128D ({e})")
+                if "head" in ckpt:
+                    try:
+                        model.head.load_state_dict(ckpt["head"])
+                        print("  ✅ Đã phục hồi EmotionMLP Head.")
+                    except Exception as e:
+                        print(f"  ⚠️ Checkpoint có kích thước Head cũ không khớp kiến trúc 647D ({e})")
+                if "optimizer" in ckpt:
+                    try:
+                        optimizer.load_state_dict(ckpt["optimizer"])
+                        print("  ✅ Đã phục hồi Optimizer state.")
+                    except Exception as opt_e:
+                        print(f"  ⚠️ Bỏ qua nạp Optimizer state ({opt_e})")
+                if "scheduler" in ckpt and ckpt["scheduler"]:
+                    try:
+                        scheduler.load_state_dict(ckpt["scheduler"])
+                        print("  ✅ Đã phục hồi LR Scheduler state.")
+                    except Exception:
+                        pass
+                if "scaler" in ckpt and ckpt["scaler"] and scaler is not None:
+                    try:
+                        scaler.load_state_dict(ckpt["scaler"])
+                        print("  ✅ Đã phục hồi GradScaler FP16 state.")
+                    except Exception:
+                        pass
+
+                start_epoch = ckpt.get("epoch", 0) + 1
+                best_val_f1 = ckpt.get("best_val_f1", ckpt.get("val_f1", 0.0))
+                patience_counter = ckpt.get("patience_counter", 0)
+                print(f"  🎉 Nạp thành công! Bắt đầu tiếp tục từ Epoch {start_epoch}, Best Val F1 hiện tại: {best_val_f1:.4f}")
+            except Exception as e:
+                print(f"  ❌ Lỗi khi nạp checkpoint {found_ckpt}: {e}")
+                print("  ⚠️ Bắt đầu huấn luyện từ Epoch 1.")
+        else:
+            print(f"\n⚠️ [RESUME CẢNH BÁO] Không tìm thấy file checkpoint nào trong các vị trí tìm kiếm:")
+            for p in resume_candidates[:4]:
+                print(f"    - {p}")
+            print(f"  ➡️ Huấn luyện sẽ bắt đầu từ Epoch 1.")
 
     # 6. Vòng lặp huấn luyện
     print("\n[2/4] Bắt đầu quá trình Huấn Luyện LoRA...")
@@ -626,44 +708,79 @@ def run_training(args):
         history["val_acc"].append(val_acc)
         history["val_f1"].append(val_f1)
 
+        # Thư mục lưu checkpoint phục vụ Resume (cục bộ và Drive nếu có)
+        resume_root_dir = os.path.join(BACKEND_DIR, "..", "resume")
+        os.makedirs(resume_root_dir, exist_ok=True)
+        os.makedirs(args.save_dir, exist_ok=True)
+        drive_sync_dir = "/content/drive/MyDrive/edufocus_weights_rafdb"
+
+        lora_sd = extract_lora_state_dict(model.clip)
+        checkpoint_data = {
+            "epoch": epoch,
+            "val_f1": val_f1,
+            "val_acc": val_acc,
+            "best_val_f1": best_val_f1,
+            "patience_counter": patience_counter,
+            "lora_info": model.lora_info,
+            "lora_state_dict": lora_sd,
+            "visual_proj": model.visual_proj.state_dict(),
+            "facial_cross_attn": model.facial_cross_attn.state_dict(),
+            "head": model.head.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict() if scheduler else None,
+            "scaler": scaler.state_dict() if scaler else None,
+        }
+
+        # Lưu lora_last.pth sau MỖI epoch vào thư mục weights tập trung và Drive nếu có
+        safe_torch_save(checkpoint_data, os.path.join(WEIGHTS_DIR, "lora_last.pth"))
+        safe_torch_save(checkpoint_data, os.path.join(args.save_dir, "lora_last.pth"))
+        safe_torch_save(checkpoint_data, os.path.join(resume_root_dir, "lora_last.pth"))
+        if os.path.exists(drive_sync_dir):
+            try:
+                import shutil
+                shutil.copy2(os.path.join(WEIGHTS_DIR, "lora_last.pth"), os.path.join(drive_sync_dir, "lora_last.pth"))
+            except Exception:
+                pass
+
         # Kiểm tra lưu checkpoint tốt nhất
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1
             patience_counter = 0
-            print(f"  ⭐ [KỶ LỤC MỚI] Đạt Best Val F1: {best_val_f1:.4f}! Đang lưu toàn bộ checkpoints...")
+            checkpoint_data["best_val_f1"] = best_val_f1
+            checkpoint_data["patience_counter"] = patience_counter
+            print(f"  ⭐ [KỶ LỤC MỚI] Đạt Best Val F1: {best_val_f1:.4f}! Đang lưu toàn bộ trọng số vào '{os.path.relpath(WEIGHTS_DIR, BACKEND_DIR)}/'...")
 
-            os.makedirs(args.save_dir, exist_ok=True)
+            # 1. Lưu checkpoint lora_best.pth
+            safe_torch_save(checkpoint_data, os.path.join(WEIGHTS_DIR, "lora_best.pth"))
+            safe_torch_save(checkpoint_data, os.path.join(args.save_dir, "lora_best.pth"))
+            safe_torch_save(checkpoint_data, os.path.join(resume_root_dir, "lora_best.pth"))
+            if os.path.exists(drive_sync_dir):
+                try:
+                    import shutil
+                    shutil.copy2(os.path.join(WEIGHTS_DIR, "lora_best.pth"), os.path.join(drive_sync_dir, "lora_best.pth"))
+                except Exception:
+                    pass
+
+            # 2. Lưu module con vào thư mục weights tập trung (và đồng bộ sang models để tương thích ngược)
             models_dir = os.path.join(BACKEND_DIR, "models")
             os.makedirs(models_dir, exist_ok=True)
+            for target_dir in [WEIGHTS_DIR, models_dir]:
+                safe_torch_save(model.visual_proj.state_dict(), os.path.join(target_dir, "visual_proj_best.pth"))
+                safe_torch_save(model.facial_cross_attn.state_dict(), os.path.join(target_dir, "facial_cross_attn_best.pth"))
 
-            # 1. Lưu checkpoint nhẹ LoRA
-            lora_sd = extract_lora_state_dict(model.clip)
-            lora_ckpt = {
-                "epoch": epoch,
-                "val_f1": val_f1,
-                "val_acc": val_acc,
-                "lora_info": model.lora_info,
-                "lora_state_dict": lora_sd,
-                "visual_proj": model.visual_proj.state_dict(),
-                "facial_cross_attn": model.facial_cross_attn.state_dict(),
-                "head": model.head.state_dict(),
-                "optimizer": optimizer.state_dict(),
-            }
-            safe_torch_save(lora_ckpt, os.path.join(args.save_dir, "lora_best.pth"))
+            # Lưu trọng số Baseline EmotionMLP
+            for target_dir in [WEIGHTS_DIR, BACKEND_DIR]:
+                safe_torch_save(model.head.state_dict(), os.path.join(target_dir, "emotion_mlp_weights.pth"))
+                safe_torch_save(model.head.state_dict(), os.path.join(target_dir, f"emotion_mlp_weights_{args.dataset.lower()}.pth"))
+                safe_torch_save(model.head.state_dict(), os.path.join(target_dir, "emotion_resmlp_weights.pth"))
 
-            # 2. Lưu module con cho Downstream Pipeline (True End-to-End)
-            safe_torch_save(model.visual_proj.state_dict(), os.path.join(models_dir, "visual_proj_best.pth"))
-            safe_torch_save(model.facial_cross_attn.state_dict(), os.path.join(models_dir, "facial_cross_attn_best.pth"))
-            safe_torch_save(model.head.state_dict(), os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth"))
-            safe_torch_save(model.head.state_dict(), os.path.join(BACKEND_DIR, f"emotion_mlp_weights_{args.dataset.lower()}.pth"))
-            # Tương thích ngược: lưu thêm alias emotion_resmlp_weights.pth
-            safe_torch_save(model.head.state_dict(), os.path.join(BACKEND_DIR, "emotion_resmlp_weights.pth"))
-            print(f"  ✅ Đã lưu trọng số Baseline EmotionMLP (End-to-End) tại: {os.path.join(BACKEND_DIR, 'emotion_mlp_weights.pth')}")
+            print(f"  ✅ Đã lưu trọng số vào thư mục tập trung: {WEIGHTS_DIR}")
 
             # 3. MERGE LORA WEIGHTS VÀO CLIP ĐỂ XUẤT CHUẨN OPENAI CLIP (302 keys)
             print("  🔄 Đang Merge LoRA weights vào bản sao CLIP ViT để xuất 'clip_finetuned_best.pth'...")
             merge_lora_weights(model.clip)
             clean_clip_sd = get_clean_clip_state_dict(model.clip)
+            safe_torch_save(clean_clip_sd, os.path.join(WEIGHTS_DIR, "clip_finetuned_best.pth"))
             safe_torch_save(clean_clip_sd, os.path.join(models_dir, "clip_finetuned_best.pth"))
             unmerge_lora_weights(model.clip)
             print("  ✅ Đã xuất 'clip_finetuned_best.pth' chuẩn OpenAI CLIP (302 keys) tương thích 100% downstream!")
@@ -676,14 +793,29 @@ def run_training(args):
     # 7. Đánh giá cuối cùng trên Test Set
     if test_loader:
         print("\n[3/4] Đánh giá mô hình tốt nhất trên Test Set...")
-        # Nạp lại weights tốt nhất
-        best_pth = os.path.join(args.save_dir, "lora_best.pth")
+        # Nạp lại weights tốt nhất từ thư mục weights tập trung
+        best_pth = os.path.join(WEIGHTS_DIR, "lora_best.pth")
+        if not os.path.exists(best_pth):
+            best_pth = os.path.join(args.save_dir, "lora_best.pth")
         if os.path.exists(best_pth):
             ckpt = torch.load(best_pth, map_location=device, weights_only=False)
-            load_lora_state_dict(model.clip, ckpt["lora_state_dict"])
-            model.visual_proj.load_state_dict(ckpt["visual_proj"])
-            model.facial_cross_attn.load_state_dict(ckpt["facial_cross_attn"])
-            model.head.load_state_dict(ckpt["head"])
+            if "lora_state_dict" in ckpt:
+                load_lora_state_dict(model.clip, ckpt["lora_state_dict"])
+            if "visual_proj" in ckpt:
+                try:
+                    model.visual_proj.load_state_dict(ckpt["visual_proj"])
+                except Exception:
+                    pass
+            if "facial_cross_attn" in ckpt:
+                try:
+                    model.facial_cross_attn.load_state_dict(ckpt["facial_cross_attn"])
+                except Exception:
+                    pass
+            if "head" in ckpt:
+                try:
+                    model.head.load_state_dict(ckpt["head"])
+                except Exception:
+                    pass
 
         model.eval()
         test_preds, test_targets = [], []
@@ -714,11 +846,19 @@ def run_training(args):
             )
         )
 
-    # 8. Lưu lịch sử
+    # 8. Lưu lịch sử huấn luyện vào thư mục reports tập trung
     print("\n[4/4] Lưu lịch sử huấn luyện...")
-    hist_path = os.path.join(args.save_dir, "training_history.json")
+    hist_path = os.path.join(REPORTS_DIR, "training_history.json")
     with open(hist_path, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
+    # Lưu thêm bản sao tại save_dir nếu save_dir khác reports
+    if args.save_dir and args.save_dir != REPORTS_DIR:
+        safe_copy_path = os.path.join(args.save_dir, "training_history.json")
+        try:
+            with open(safe_copy_path, "w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2)
+        except Exception:
+            pass
     print(f"  ✅ Lịch sử huấn luyện đã ghi vào: {hist_path}")
     print("\n🎉 HUẤN LUYỆN LoRA HOÀN TẤT THÀNH CÔNG!")
 
@@ -808,8 +948,8 @@ def main():
     parser.add_argument(
         "--save_dir",
         type=str,
-        default=os.path.join(BACKEND_DIR, "reports", "lora"),
-        help="Thư mục lưu weights và reports",
+        default=WEIGHTS_DIR,
+        help="Thư mục lưu weights tập trung (Mặc định: backend/weights)",
     )
     parser.add_argument(
         "--dry_run", action="store_true", help="Chế độ test nhanh pipeline"

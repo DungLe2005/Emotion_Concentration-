@@ -1,5 +1,12 @@
 import sys
 import os
+
+# Cấu hình cache an toàn cho matplotlib trên Windows
+BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(BACKEND_DIR, ".tmp_mpl"))
+
 import json
 import argparse
 import numpy as np
@@ -23,6 +30,14 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
+# Các thư mục quản lý tập trung tài nguyên
+WEIGHTS_DIR = os.path.join(BACKEND_DIR, "weights")
+CACHE_DIR = os.path.join(BACKEND_DIR, "cache")
+REPORTS_DIR = os.path.join(BACKEND_DIR, "reports")
+os.makedirs(WEIGHTS_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(REPORTS_DIR, exist_ok=True)
+
 from models.mlp import EmotionMLP
 from models.resmlp import EmotionResMLP
 from dataset.dataset_loader import DatasetRegistry, STANDARD_EMOTIONS, STANDARD_LABEL_TO_IDX
@@ -45,12 +60,30 @@ class MultiDatasetBenchmark:
         print(f"[Benchmark] Thiết bị kiểm thử: {self.device}")
 
         if model_weights_path is None:
-            if os.path.exists(os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth")):
-                model_weights_path = "emotion_mlp_weights.pth"
+            candidates = [
+                os.path.join(WEIGHTS_DIR, "emotion_mlp_weights.pth"),
+                os.path.join(WEIGHTS_DIR, "emotion_resmlp_weights.pth"),
+                os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth"),
+                os.path.join(BACKEND_DIR, "emotion_resmlp_weights.pth"),
+            ]
+            full_weights_path = None
+            for p in candidates:
+                if os.path.exists(p):
+                    full_weights_path = p
+                    break
+            if full_weights_path is None:
+                full_weights_path = os.path.join(WEIGHTS_DIR, "emotion_mlp_weights.pth")
+        else:
+            if not os.path.isabs(model_weights_path):
+                # Kiểm tra trong weights/ trước, rồi backend/
+                candidate = os.path.join(WEIGHTS_DIR, model_weights_path)
+                if os.path.exists(candidate):
+                    full_weights_path = candidate
+                else:
+                    full_weights_path = os.path.join(BACKEND_DIR, model_weights_path)
             else:
-                model_weights_path = "emotion_resmlp_weights.pth"
+                full_weights_path = model_weights_path
 
-        full_weights_path = os.path.join(BACKEND_DIR, model_weights_path) if not os.path.isabs(model_weights_path) else model_weights_path
         if not os.path.exists(full_weights_path):
             raise FileNotFoundError(f"[Benchmark] Không tìm thấy weights mô hình tại: {full_weights_path}")
 
@@ -76,8 +109,12 @@ class MultiDatasetBenchmark:
 
     @staticmethod
     def find_weights_for_dataset(dataset_name: str) -> str:
-        """Tìm file trọng số riêng cho dataset, fallback sang trọng số chung."""
+        """Tìm file trọng số riêng cho dataset, fallback sang trọng số chung (ưu tiên weights/)."""
         candidates = [
+            os.path.join(WEIGHTS_DIR, f"emotion_mlp_weights_{dataset_name.lower()}.pth"),
+            os.path.join(WEIGHTS_DIR, f"emotion_resmlp_weights_{dataset_name.lower()}.pth"),
+            os.path.join(WEIGHTS_DIR, "emotion_mlp_weights.pth"),
+            os.path.join(WEIGHTS_DIR, "emotion_resmlp_weights.pth"),
             os.path.join(BACKEND_DIR, f"emotion_mlp_weights_{dataset_name.lower()}.pth"),
             os.path.join(BACKEND_DIR, f"emotion_resmlp_weights_{dataset_name.lower()}.pth"),
             os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth"),
@@ -86,11 +123,11 @@ class MultiDatasetBenchmark:
         for p in candidates:
             if os.path.exists(p):
                 return p
-        return os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth")
+        return os.path.join(WEIGHTS_DIR, "emotion_mlp_weights.pth")
 
     def evaluate_dataset(self, dataset_name: str, cache_dir: str = None) -> dict:
         if cache_dir is None:
-            cache_dir = BACKEND_DIR
+            cache_dir = CACHE_DIR
 
         ds_data = load_dataset_cache(dataset_name, cache_dir=cache_dir)
         
@@ -163,7 +200,7 @@ class MultiDatasetBenchmark:
             dataset_names = DatasetRegistry.list_datasets()
 
         if output_dir is None:
-            output_dir = os.path.join(BACKEND_DIR, "output", "benchmark_results")
+            output_dir = os.path.join(REPORTS_DIR, "benchmark_results")
 
         os.makedirs(output_dir, exist_ok=True)
 

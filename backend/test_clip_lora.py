@@ -31,7 +31,9 @@ def test_lora():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Thiết bị: {device}")
 
-    clip_path = os.path.join(BACKEND_DIR, "models", "clip_finetuned_best.pth")
+    clip_path = os.path.join(BACKEND_DIR, "weights", "clip_finetuned_best.pth")
+    if not os.path.exists(clip_path):
+        clip_path = os.path.join(BACKEND_DIR, "models", "clip_finetuned_best.pth")
     if os.path.exists(clip_path):
         print(f"Nạp CLIP từ checkpoint local: {clip_path}")
         state_dict = torch.load(clip_path, map_location=device, weights_only=False)

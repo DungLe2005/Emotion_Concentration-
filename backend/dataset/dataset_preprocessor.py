@@ -21,6 +21,14 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
+# Các thư mục quản lý tập trung tài nguyên
+WEIGHTS_DIR = os.path.join(BACKEND_DIR, "weights")
+CACHE_DIR = os.path.join(BACKEND_DIR, "cache")
+REPORTS_DIR = os.path.join(BACKEND_DIR, "reports")
+os.makedirs(WEIGHTS_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(REPORTS_DIR, exist_ok=True)
+
 # Cấu hình cache an toàn cho matplotlib trên Windows
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(BACKEND_DIR, ".tmp_mpl"))
 
@@ -56,7 +64,9 @@ class MultiDatasetPreprocessor:
         print(f"[Preprocessor] Thiết bị tính toán: {self.device}")
 
         print("[Preprocessor] Đang nạp mô hình CLIP (ViT-B/16)...")
-        finetuned_clip_path = os.path.join(BACKEND_DIR, "models", "clip_finetuned_best.pth")
+        finetuned_clip_path = os.path.join(WEIGHTS_DIR, "clip_finetuned_best.pth")
+        if not os.path.exists(finetuned_clip_path):
+            finetuned_clip_path = os.path.join(BACKEND_DIR, "models", "clip_finetuned_best.pth")
         
         # Transform chuẩn tĩnh của CLIP ViT (224x224)
         from torchvision import transforms
@@ -91,8 +101,13 @@ class MultiDatasetPreprocessor:
         # Nạp Facial Query Cross-Attention & Visual Projection nếu có (Hướng B GPU)
         self.facial_cross_attn = None
         self.visual_proj = None
-        fca_path = os.path.join(BACKEND_DIR, "models", "facial_cross_attn_best.pth")
-        vproj_path = os.path.join(BACKEND_DIR, "models", "visual_proj_best.pth")
+        fca_path = os.path.join(WEIGHTS_DIR, "facial_cross_attn_best.pth")
+        if not os.path.exists(fca_path):
+            fca_path = os.path.join(BACKEND_DIR, "models", "facial_cross_attn_best.pth")
+
+        vproj_path = os.path.join(WEIGHTS_DIR, "visual_proj_best.pth")
+        if not os.path.exists(vproj_path):
+            vproj_path = os.path.join(BACKEND_DIR, "models", "visual_proj_best.pth")
         if os.path.exists(fca_path):
             try:
                 fca_sd = torch.load(fca_path, map_location=self.device, weights_only=True)
@@ -134,12 +149,18 @@ class MultiDatasetPreprocessor:
 
         if output_cache_path is None:
             output_cache_path = os.path.join(
-                BACKEND_DIR, f"cache_{dataset_name.lower()}.npz"
+                CACHE_DIR, f"cache_{dataset_name.lower()}.npz"
             )
 
-        if not force_reextract and os.path.exists(output_cache_path):
-            print(f"[Cache Found] File cache đã tồn tại tại: {output_cache_path}")
-            return output_cache_path
+        if not force_reextract:
+            if os.path.exists(output_cache_path):
+                print(f"[Cache Found] File cache đã tồn tại tại: {output_cache_path}")
+                return output_cache_path
+            # Kiểm tra vị trí cũ để tương thích ngược
+            legacy_cache = os.path.join(BACKEND_DIR, f"cache_{dataset_name.lower()}.npz")
+            if os.path.exists(legacy_cache):
+                print(f"[Cache Found] Tìm thấy file cache ở vị trí cũ: {legacy_cache}")
+                return legacy_cache
 
         print(f"\n========================================================")
         print(f"   BẮT ĐẦU TRÍCH XUẤT ĐẶC TRƯNG [Dataset: {dataset_name}]")
@@ -231,8 +252,12 @@ class MultiDatasetPreprocessor:
                 else np.zeros((len(image_paths), PROMPT_DIM), dtype=np.float32)
             )
 
-            # Kiểm tra xem có sẵn landmark cache cho split này không
-            lm_cache_file = os.path.join(BACKEND_DIR, f"cache_{dataset_name.lower()}_{split_name.lower()}_landmarks.npz")
+            # Kiểm tra xem có sẵn landmark cache cho split này không (ưu tiên thư mục cache/)
+            lm_cache_file = os.path.join(CACHE_DIR, f"cache_{dataset_name.lower()}_{split_name.lower()}_landmarks.npz")
+            if not os.path.exists(lm_cache_file):
+                legacy_lm = os.path.join(BACKEND_DIR, f"cache_{dataset_name.lower()}_{split_name.lower()}_landmarks.npz")
+                if os.path.exists(legacy_lm):
+                    lm_cache_file = legacy_lm
             landmark_features = None
             if os.path.exists(lm_cache_file):
                 try:
@@ -286,13 +311,14 @@ class MultiDatasetPreprocessor:
 
 
 def load_dataset_cache(dataset_name: str, cache_dir: str = None) -> dict:
-    if cache_dir is None:
-        cache_dir = BACKEND_DIR
+    search_dirs = [cache_dir] if cache_dir else [CACHE_DIR, BACKEND_DIR]
 
-    possible_paths = [
-        os.path.join(cache_dir, f"cache_{dataset_name.lower()}.npz"),
-        os.path.join(cache_dir, "dataset_cache.npz") if dataset_name.lower() == "default" else ""
-    ]
+    possible_paths = []
+    for d in search_dirs:
+        if d:
+            possible_paths.append(os.path.join(d, f"cache_{dataset_name.lower()}.npz"))
+            if dataset_name.lower() == "default":
+                possible_paths.append(os.path.join(d, "dataset_cache.npz"))
 
     cache_path = None
     for p in possible_paths:
@@ -312,6 +338,8 @@ def load_dataset_cache(dataset_name: str, cache_dir: str = None) -> dict:
 
 
 def combine_dataset_caches(dataset_names: list, cache_dir: str = None) -> dict:
+    if cache_dir is None:
+        cache_dir = CACHE_DIR
     combined_X_train = []
     combined_y_train = []
     combined_X_test = []

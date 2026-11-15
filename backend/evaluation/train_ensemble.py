@@ -28,6 +28,14 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
+# Các thư mục quản lý tập trung tài nguyên
+WEIGHTS_DIR = os.path.join(BACKEND_DIR, "weights")
+CACHE_DIR = os.path.join(BACKEND_DIR, "cache")
+REPORTS_DIR = os.path.join(BACKEND_DIR, "reports")
+os.makedirs(WEIGHTS_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(REPORTS_DIR, exist_ok=True)
+
 from models.mlp import EmotionMLP
 from dataset.dataset_loader import DatasetRegistry, STANDARD_LABEL_TO_IDX, STANDARD_EMOTIONS
 from dataset.dataset_preprocessor import load_dataset_cache, combine_dataset_caches
@@ -144,9 +152,13 @@ def evaluate_dataset(dataset_name: str, epochs: int = 100):
     print(f"🔥 HUẤN LUYỆN & ĐÁNH GIÁ MÔ HÌNH BASELINE EMOTIONMLP [{dataset_name.upper()}]")
     print("=" * 80)
 
-    cache_file = os.path.join(BACKEND_DIR, f"cache_{dataset_name.lower()}.npz")
+    cache_file = os.path.join(CACHE_DIR, f"cache_{dataset_name.lower()}.npz")
     if not os.path.exists(cache_file):
-        raise FileNotFoundError(f"Không tìm thấy file cache: {cache_file}")
+        legacy_cache = os.path.join(BACKEND_DIR, f"cache_{dataset_name.lower()}.npz")
+        if os.path.exists(legacy_cache):
+            cache_file = legacy_cache
+        else:
+            raise FileNotFoundError(f"Không tìm thấy file cache: {cache_file}")
 
     data = np.load(cache_file)
     X_train, y_train = data["X_train"], data["y_train"]
@@ -209,14 +221,18 @@ def evaluate_dataset(dataset_name: str, epochs: int = 100):
     print("\nChi tiết báo cáo phân loại (Classification Report):")
     print(classification_report(y_test, preds, target_names=STANDARD_EMOTIONS, zero_division=0))
 
-    # Lưu trọng số mô hình
-    save_path_default = os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth")
-    save_path_ds = os.path.join(BACKEND_DIR, f"emotion_mlp_weights_{dataset_name.lower()}.pth")
-    torch.save(model.state_dict(), save_path_default)
+    # Lưu trọng số mô hình vào thư mục weights tập trung
+    save_path_weights = os.path.join(WEIGHTS_DIR, "emotion_mlp_weights.pth")
+    save_path_ds = os.path.join(WEIGHTS_DIR, f"emotion_mlp_weights_{dataset_name.lower()}.pth")
+    torch.save(model.state_dict(), save_path_weights)
     torch.save(model.state_dict(), save_path_ds)
-    # Tương thích ngược: lưu thêm file emotion_resmlp_weights.pth
+    torch.save(model.state_dict(), os.path.join(WEIGHTS_DIR, "emotion_resmlp_weights.pth"))
+
+    # Tương thích ngược: lưu thêm tại root backend
+    torch.save(model.state_dict(), os.path.join(BACKEND_DIR, "emotion_mlp_weights.pth"))
+    torch.save(model.state_dict(), os.path.join(BACKEND_DIR, f"emotion_mlp_weights_{dataset_name.lower()}.pth"))
     torch.save(model.state_dict(), os.path.join(BACKEND_DIR, "emotion_resmlp_weights.pth"))
-    print(f"✅ Đã lưu trọng số Baseline EmotionMLP tại: {save_path_default} và {save_path_ds}")
+    print(f"✅ Đã lưu trọng số Baseline EmotionMLP tại: {save_path_weights} và {save_path_ds}")
 
     return {
         "dataset": dataset_name,

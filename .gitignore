@@ -171,6 +171,20 @@ ehthumbs_vista.db
 backend/models/clip_finetuned_best.pth
 backend/models/facial_cross_attn_best.pth
 
+# Centralized Weights and Caches
+backend/weights/*
+!backend/weights/.gitkeep
+backend/cache/*
+!backend/cache/.gitkeep
+backend/.tmp_mpl/
+
 # Bo qua model weights vuot gioi han GitHub
 backend/models/clip_finetuned_best.pth
 backend/models/facial_cross_attn_best.pth
+
+# Centralized Weights and Caches
+backend/weights/*
+!backend/weights/.gitkeep
+backend/cache/*
+!backend/cache/.gitkeep
+backend/.tmp_mpl/
