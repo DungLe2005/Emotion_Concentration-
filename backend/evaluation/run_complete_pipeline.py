@@ -229,7 +229,7 @@ def main():
             cmd_lora.append("--dry_run")
         if args.fp16:
             cmd_lora.append("--fp16")
-        if args.resume:
+        if args.resume or args.resume_file:
             cmd_lora.append("--resume")
         if args.resume_dir:
             cmd_lora.extend(["--resume_dir", args.resume_dir])

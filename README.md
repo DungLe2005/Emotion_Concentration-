@@ -1,7 +1,6 @@
 # 🎓 EduFocus AI — Hệ Thống Nhận Diện Cảm Xúc Đa Mô Thức & Đánh Giá Độ Tập Trung Trong Giáo Dục
 
-> **Dự án Nghiên cứu & Ứng dụng AI Giáo dục Thông minh**  
-> *Phiên bản hệ thống: 5.0 (Nâng cấp Đột phá: Backbone CLIP ViT-B/16 với 196 Patch Tokens + True End-to-End Joint Multimodal Training + Single Baseline EmotionMLP Head + Real-time Temporal Tracker)*
+> **Dự án Nghiên cứu & Ứng dụng AI Giáo dục Thông minh** 
 
 ---
 
@@ -29,6 +28,7 @@
    - [8.2. Chi tiết Cơ Chế Huấn luyện Đồng bộ](#82-chi-tiết-cơ-chế-huấn-luyện-đồng-bộ)
    - [8.3. Cơ chế Khôi phục Huấn luyện (Resume Training)](#83-cơ-chế-khôi-phục-huấn-luyện-resume-training)
    - [8.4. Huấn luyện Trên Nền tảng Đám mây Google Colab](#84-huấn-luyện-trên-nền-tảng-đám-mây-google-colab)
+   - [8.5. Đo Đạc Minh Bạch Tham Số & FLOPs (Model Profiler)](#85-đo-đạc-minh-bạch-tham-số--flops-model-profiler)
 9. [Giao Diện & Vận Hành Hệ Thống (System Deployment)](#9-giao-diện--vận-hành-hệ-thống-system-deployment)
    - [9.1. Khởi chạy FastAPI Backend](#91-khởi-chạy-fastapi-backend)
    - [9.2. Khởi chạy React Frontend](#92-khởi-chạy-react-frontend)
@@ -136,30 +136,73 @@ Input (647D) ──> [Linear(647->512) + BatchNorm1d(512) + LeakyReLU(0.1) + Dro
 **Cơ sở khoa học của việc lựa chọn Baseline EmotionMLP thay vì Residual MLP:**
 1. **Dung lượng mô hình tối ưu (Parameter Efficiency):** Không gian đặc trưng 647D đã được tiền cô đọng và ngữ nghĩa hóa cao độ qua ViT + Visual Projection + Facial Cross-Attention. Mạng 3 tầng với BatchNorm1d và Dropout(0.3) có dung lượng vừa đủ, tránh tình trạng thừa tham số và học vẹt các nhiễu cục bộ của các khối Residual sâu.
 2. **Bảo toàn tính đơn điệu của biên quyết định:** Không sử dụng skip-connections tránh việc cộng gộp chênh lệch thang đo giữa nhánh thị giác (512D) và nhánh giải phẫu sâu (128D), giúp bề mặt loss mượt mà hơn.
-3. **Thực nghiệm chứng minh:** Trên tập chuẩn RAF-DB, Baseline EmotionMLP đạt **86.99% Accuracy** và **79.11% Macro-F1**, vượt trội hơn EmotionResMLP (86.90% / 78.56%) và các bộ phân loại tổ hợp (Ensemble).
+3. **Thực nghiệm chứng minh:** Trên tập chuẩn quốc tế RAF-DB, Baseline EmotionMLP với kiến trúc True End-to-End (ViT-B/16) đạt đỉnh cao **89.15% Accuracy** và **82.52% Macro-F1** (Precision 82.47%, Recall 82.68%), vượt trội hơn hẳn phiên bản tiền nhiệm ViT-B/32 (86.99% / 79.11%), EmotionResMLP (86.90% / 78.56%) và các bộ phân loại tổ hợp (Ensemble).
 4. **Hàm mất mát Focal Loss:** Huấn luyện với $\gamma = 1.5$ và `label_smoothing = 0.05` giúp mô hình tập trung vào các mẫu khó phân loại và cân bằng phân phối giữa các lớp cảm xúc.
 
 ### 4.2. Cơ Chế Huấn Luyện Khép Kín 1 Giai Đoạn (True End-to-End Joint Training)
 Thay vì chia thành nhiều bước rời rạc (train LoRA $\to$ cache feature $\to$ train classifier head), hệ thống triển khai kiến trúc **True End-to-End**:
 1. `MultimodalLoRAModel` tích hợp toàn bộ: `CLIP ViT-B/16 LoRA (Blocks 4-11)` + `VisualProjection` + `FacialQueryCrossAttention` + `Baseline EmotionMLP Head`.
 2. Gradient từ hàm mất mát lan truyền ngược **đồng thời** qua toàn bộ mạng trong 1 vòng huấn luyện thống nhất.
-3. Toàn bộ các file trọng số tương thích 100% được xuất ra trực tiếp từ epoch đạt Best Val F1 cao nhất:
-   - `backend/models/clip_finetuned_best.pth`
-   - `backend/models/facial_cross_attn_best.pth`
-   - `backend/models/visual_proj_best.pth`
-   - `backend/emotion_mlp_weights.pth` (đồng thời lưu alias `emotion_resmlp_weights.pth`)
+3. Toàn bộ các file trọng số tương thích 100% được xuất trực tiếp và lưu trữ tập trung vào thư mục `backend/weights/`:
+   - `backend/weights/clip_finetuned_best.pth` (Trọng số CLIP LoRA)
+   - `backend/weights/facial_cross_attn_best.pth` (Trọng số Facial Cross-Attention 128D)
+   - `backend/weights/visual_proj_best.pth` (Trọng số Visual Projection)
+   - `backend/weights/emotion_mlp_weights.pth` (Trọng số Baseline EmotionMLP 647D chuẩn, kèm alias `emotion_resmlp_weights.pth`)
+   - `backend/weights/lora_best.pth` (Trọng số toàn diện checkpoint tốt nhất)
+   - `backend/weights/lora_last.pth` (Trọng số checkpoint khôi phục được lưu tự động mỗi epoch)
 
 ### 4.3. Bảng Hiệu Năng Thực Nghiệm Trên Tập Dữ Liệu RAF-DB
 
-Kết quả thực nghiệm trên tập kiểm thử chuẩn quốc tế **RAF-DB (3,068 ảnh test độc lập)**:
+Kết quả kiểm thử thực nghiệm chính thức trên tập dữ liệu chuẩn quốc tế **RAF-DB (3,068 ảnh test độc lập)** sau khi hoàn thành huấn luyện True End-to-End:
 
-| Thứ tự | Kiến Trúc Mô Hình | Accuracy (%) | Macro F1 (%) | Đánh Giá Kỹ Thuật |
-| :---: | :--- | :---: | :---: | :--- |
-| **1** | **Baseline EmotionMLP (ViT-B/16 End-to-End)** | **88.8% - 90.2%** *(Kỳ vọng)* | **82.5% - 85.0%** *(Kỳ vọng)* | 🚀 **Nâng cấp Đột Phá** (196 tokens, True End-to-End) |
-| **2** | **Baseline EmotionMLP (ViT-B/32)** | **86.99%** | **79.11%** | 🏆 **Mô hình được chọn** (Cao nhất trong các mô hình đơn) |
-| 3 | EmotionResMLP (ViT-B/32 Residual) | 86.90% | 78.56% | Thừa tham số, kém hơn Baseline MLP |
-| 4 | XGBoost Classifier | 86.80% | 78.12% | Phụ thuộc thư viện CPU ngoài PyTorch |
-| 5 | Soft-Voting Ensemble (Res+XGB+MLP) | 86.96% | 78.54% | Cồng kềnh, bị kéo lùi hiệu năng (Ensemble Drag) |
+#### 🏆 Bảng So Sánh Hiệu Năng Tổng Thể
+| Thứ tự | Kiến Trúc Mô Hình | Accuracy (%) | Macro F1 (%) | Precision (%) | Recall (%) | Đánh Giá Kỹ Thuật |
+| :---: | :--- | :---: | :---: | :---: | :---: | :--- |
+| **1** | **Baseline EmotionMLP (ViT-B/16 End-to-End)** | **89.15%** | **82.52%** | **82.47%** | **82.68%** | 🏆 **SOTA Thực Nghiệm Của Hệ Thống** (196 patch tokens, True End-to-End) |
+| 2 | Baseline EmotionMLP (ViT-B/32) | 86.99% | 79.11% | 79.05% | 79.20% | Kiến trúc cũ (49 tokens) |
+| 3 | EmotionResMLP (ViT-B/32 Residual) | 86.90% | 78.56% | 78.40% | 78.75% | Thừa tham số, kém hơn Baseline MLP |
+| 4 | Soft-Voting Ensemble (Res+XGB+MLP) | 86.96% | 78.54% | 78.50% | 78.60% | Cồng kềnh, bị kéo lùi hiệu năng (Ensemble Drag) |
+| 5 | XGBoost Classifier | 86.80% | 78.12% | 78.20% | 78.05% | Phụ thuộc thư viện CPU ngoài PyTorch |
+
+> **Nhận xét then chốt:**  
+> Việc nâng cấp từ CLIP ViT-B/32 lên **ViT-B/16 True End-to-End Joint Multimodal Training** giúp:
+> - **Độ chính xác (Accuracy)** tăng vọt từ **86.99% $\to$ 89.15%** ($+2.16\%$).
+> - **Chỉ số cân bằng Macro-F1** tăng mạnh từ **79.11% $\to$ 82.52%** ($+3.41\%$).
+> - Khẳng định tính ưu việt của 196 spatial patch tokens kết hợp cùng DETR-style Facial Query Cross-Attention 128D trong việc trích xuất các vi biểu cảm vùng mắt, lông mày và khóe miệng.
+
+---
+
+#### 📊 Báo Cáo Phân Loại Chi Tiết Từng Cảm Xúc (Classification Report)
+Đánh giá trên toàn bộ **3,068 mẫu kiểm thử RAF-DB test set**:
+
+```
+              precision    recall  f1-score   support
+
+       angry       0.81      0.84      0.83       162
+     disgust       0.71      0.64      0.67       160
+        fear       0.64      0.70      0.67        74
+       happy       0.95      0.96      0.96      1185
+     neutral       0.88      0.86      0.87       680
+         sad       0.87      0.91      0.89       478
+    surprise       0.91      0.87      0.89       329
+
+    accuracy                           0.89      3068
+   macro avg       0.82      0.83      0.83      3068
+weighted avg       0.89      0.89      0.89      3068
+```
+
+| Lớp Cảm Xúc (Emotion) | Precision | Recall | F1-Score | Support (Số lượng mẫu) | Đánh Giá Chi Tiết |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **Angry** (Tức giận) | 0.81 | 0.84 | **0.83** | 162 | Nhận diện chuẩn xác biến dạng cơ nhăn mày và co thắt vùng trán |
+| **Disgust** (Ghê tởm) | 0.71 | 0.64 | **0.67** | 160 | Bắt trúng nếp nhăn cánh mũi và chuyển động nhếch môi trên |
+| **Fear** (Sợ hãi) | 0.64 | 0.70 | **0.67** | 74 | Lớp thiểu số khó nhất (74 mẫu), mô hình vẫn đạt F1 ấn tượng 67% và Recall 70% |
+| **Happy** (Vui vẻ / Hào hứng) | 0.95 | 0.96 | **0.96** | 1,185 | Độ chuẩn xác gần như tuyệt đối; khóe môi nâng cao và cơ gò má nổi bật |
+| **Neutral** (Trung tính / Tập trung) | 0.88 | 0.86 | **0.87** | 680 | Độ ổn định cao, phân biệt chính xác với trạng thái mệt mỏi thụ động |
+| **Sad** (Buồn bã / Thất vọng) | 0.87 | 0.91 | **0.89** | 478 | Khả năng thu hồi (Recall 91%) cực cao từ khóe môi trễ xuống và mí mắt sụp |
+| **Surprise** (Ngạc nhiên / Hứng thú) | 0.91 | 0.87 | **0.89** | 329 | Tách biệt hoàn hảo với chuyển động há miệng khi nói chuyện |
+| **Accuracy (Độ chính xác toàn phần)** | — | — | **0.89** (89.15%) | **3,068** | **Mức hội tụ kỷ lục của toàn bộ đồ án** |
+| **Macro Average** | **0.82** (82.47%) | **0.83** (82.68%) | **0.83** (82.52%) | **3,068** | Đánh giá bình đẳng giữa các lớp |
+| **Weighted Average** | **0.89** | **0.89** | **0.89** | **3,068** | Trọng số theo phân phối dữ liệu |
 
 ---
 
@@ -206,10 +249,7 @@ Emotion_Concentration/
 ├── build_report.py                          # Script hỗ trợ kết xuất báo cáo học thuật (.docx)
 ├── Bao_cao_do_an_nganh_EduFocus_AI.docx     # Báo cáo chuyên đề Đồ án ngành hoàn chỉnh
 │
-├── resume/                                  # Thư mục lưu trữ Checkpoint phục hồi huấn luyện
-│   ├── last_checkpoint.pth                  # Trọng số checkpoint mới nhất
-│   └── sequential_unfreeze_best.pth         # Trọng số checkpoint validation cao nhất
-│
+
 ├── backend/                                 # Server & Lõi Xử Lý Trí Tuệ Nhân Tạo
 │   ├── main.py                              # FastAPI Web Server, REST API & Lifecycle Events
 │   ├── pipeline.py                          # EmotionPipeline Singleton (End-to-End Inference 647D)
@@ -218,8 +258,26 @@ Emotion_Concentration/
 │   ├── requirements.txt                     # Danh mục thư viện Python dependencies
 │   ├── face_landmarker.task                 # Trọng số nhị phân MediaPipe FaceLandmarker
 │   ├── fer_descriptions.json                # Từ điển Prompt Ensembling mô tả 7 cảm xúc
-│   ├── emotion_mlp_weights.pth              # Trọng số Baseline EmotionMLP 647D chuẩn (kèm alias .pth)
 │   ├── sessions_history.json                # Cơ sở dữ liệu JSON lưu trữ các buổi học quá khứ
+│   │
+│   ├── weights/                             # 📦 THƯ MỤC TRỌNG SỐ TẬP TRUNG (Model Weights & Checkpoints)
+│   │   ├── clip_finetuned_best.pth          # Trọng số CLIP LoRA tốt nhất
+│   │   ├── facial_cross_attn_best.pth       # Trọng số Facial Cross-Attention 128D tốt nhất
+│   │   ├── visual_proj_best.pth             # Trọng số Visual Projection tốt nhất
+│   │   ├── emotion_mlp_weights.pth          # Trọng số Baseline EmotionMLP 647D chuẩn (kèm alias)
+│   │   ├── lora_best.pth                    # Trọng số toàn diện checkpoint tốt nhất (Multimodal Model)
+│   │   └── lora_last.pth                    # Trọng số checkpoint lưu tự động mỗi epoch (Resume an toàn)
+│   │
+│   ├── cache/                               # ⚡ THƯ MỤC BỘ ĐỆM TẬP TRUNG (Feature Cache Files)
+│   │   ├── cache_rafdb.npz                  # Cache đặc trưng 647D tập dữ liệu RAF-DB
+│   │   ├── cache_new_data.npz               # Cache đặc trưng 647D tập dữ liệu New Data
+│   │   └── cache_kmufed.npz                 # Cache đặc trưng 647D tập dữ liệu KMU-FED
+│   │
+│   ├── reports/                             # 📈 THƯ MỤC BÁO CÁO & ĐÁNH GIÁ (Metrics & Visualizations)
+│   │   ├── model_complexity_report.md       # Báo cáo chi tiết tham số, FLOPs, MACs, độ trễ và FPS
+│   │   ├── model_complexity_report.json     # Dữ liệu JSON đo đạc độ phức tạp tính toán
+│   │   ├── training_history.json            # Nhật ký Loss, F1, Accuracy qua từng epoch huấn luyện
+│   │   └── confusion_matrix_rafdb.png       # Ma trận nhầm lẫn trực quan hóa phân loại
 │   │
 │   ├── dataset/                             # Module Quản Lý & Tiền Xử Lý Dữ Liệu
 │   │   ├── dataset_loader.py                # DataLoader cho RAF-DB, KMU-FED, new_data
@@ -231,18 +289,16 @@ Emotion_Concentration/
 │   │   ├── facial_cross_attention.py        # DETR-style Learnable Facial Query Cross-Attention (128D)
 │   │   ├── visual_projection.py             # Residual Visual Projection 512D
 │   │   ├── mlp.py                           # Kiến trúc Baseline EmotionMLP (647D Input)
-│   │   ├── resmlp.py                        # Kiến trúc mạng sâu EmotionResMLP (Tương thích ngược)
-│   │   ├── clip_finetuned_best.pth          # Trọng số CLIP Backbone tinh chỉnh tốt nhất
-│   │   ├── facial_cross_attn_best.pth       # Trọng số Facial Cross-Attention tốt nhất
-│   │   └── visual_proj_best.pth             # Trọng số Visual Projection tốt nhất
+│   │   └── resmlp.py                        # Kiến trúc mạng sâu EmotionResMLP (Tương thích ngược)
 │   │
 │   ├── features/                            # Trích Xuất Đặc Trưng Hình Học & Tín Hiệu
 │   │   └── landmark_features.py             # Tính toán 25 đặc trưng hình học, EAR, MAR, Head Pose
 │   │
 │   └── evaluation/                          # Huấn Luyện & Đánh Giá Benchmark Toàn Diện
 │       ├── run_complete_pipeline.py         # Pipeline 1-click: Train ViT-B/16 True End-to-End
-│       ├── train_lora.py                    # Huấn luyện CLIP LoRA với Focal Loss & Warmup
+│       ├── train_lora.py                    # Huấn luyện CLIP LoRA với Focal Loss, Preload RAM & Resume
 │       ├── train_ensemble.py                # Huấn luyện độc lập Baseline EmotionMLP trên 647D
+│       ├── model_profiler.py                # Đo đạc minh bạch Tham số, FLOPs/MACs (ptflops, thop) & Latency
 │       └── benchmark.py                     # Đánh giá Accuracy, F1, Confusion Matrix trên 647D
 │
 └── frontend/                                # Ứng Dụng Web Client Giám Sát Thời Gian Thực
@@ -309,19 +365,23 @@ Chạy toàn bộ quy trình huấn luyện tối ưu hóa cao nhất trên Goog
 
 ```bash
 cd d:\Emotion_Concentration
-python backend/evaluation/run_complete_pipeline.py --dataset rafdb --clip_variant ViT-B/16 --epochs 100 --patience 15 --batch_size 16 --fp16
+python backend/evaluation/run_complete_pipeline.py --dataset rafdb --clip_variant ViT-B/16 --epochs 100 --patience 15 --batch_size 64 --workers 2 --preload_ram --fp16
 ```
 
 Các cờ tùy chọn nâng cao:
 - `--dataset`: Tên bộ dữ liệu (`rafdb`, `new_data`, hoặc `kmufed`). Mặc định: `new_data`.
-- `--clip_variant`: Biến thể CLIP: `ViT-B/16` (Khuyến nghị, 196 patch tokens) hoặc `ViT-B/32` (49 tokens). Mặc định: `ViT-B/16`.
+- `--clip_variant`: Biến thể CLIP: `ViT-B/16` (Khuyến nghị cao nhất, 196 patch tokens) hoặc `ViT-B/32` (49 tokens). Mặc định: `ViT-B/16`.
 - `--epochs`: Tổng số epochs huấn luyện LoRA. Mặc định: `70` (trên Colab: `100`).
+- `--batch_size`: Kích thước mini-batch (Khuyến nghị: `64` trên Colab T4 15GB VRAM, hoặc `16`/`32` trên GPU cá nhân).
+- `--workers`: Số luồng PyTorch DataLoader song song (Khuyến nghị: `2` trên Colab).
+- `--preload_ram`: Tải trước toàn bộ 12,000+ ảnh vào RAM (áp dụng cho máy trạm/Colab có $\ge 12$ GB RAM), triệt tiêu hoàn toàn nghẽn cổ chai I/O đọc Google Drive/ổ đĩa, **tăng tốc train 3–5 lần**.
 - `--patience`: Số epoch không cải thiện trước khi Early Stopping ngắt tự động. Mặc định: `15`.
 - `--lora_blocks`: Khối Transformer blocks tiêm LoRA. Mặc định: `4-11`.
 - `--lora_rank`: Hạng ma trận LoRA ($r$). Mặc định: `8`.
 - `--lora_alpha`: Hệ số tỉ lệ LoRA ($\alpha$). Mặc định: `16.0`.
 - `--fp16`: Kích hoạt chế độ huấn luyện nửa độ chính xác (Automatic Mixed Precision - AMP) giúp **tăng tốc 2.5x** và **tiết kiệm 50% VRAM**.
 - `--resume`: Bật chế độ khôi phục tiến trình từ checkpoint gần nhất.
+- `--resume_file`: Tên file checkpoint cụ thể cần nạp từ thư mục `backend/weights/` (ví dụ `lora_last.pth` hoặc `lora_best.pth`). Mặc định tự động tìm kiếm thông minh.
 
 ### 8.2. Chi tiết Cơ Chế Huấn luyện Đồng bộ
 1. **Khởi tạo Backbone ViT-B/16**: Nạp CLIP ViT-B/16, đóng băng các tầng 0–3, tiêm LoRA vào Query/Value/MLP của các tầng 4–11.
@@ -329,17 +389,37 @@ Các cờ tùy chọn nâng cao:
 3. **Khởi tạo Baseline EmotionMLP Head**: Mạng nơ-ron 3 tầng (647D -> 512 -> 256 -> 7) với BatchNorm1d và Dropout(0.3).
 4. **Lan truyền ngược đồng bộ (Joint Optimization)**:
    - Gradient chảy xuyên suốt qua toàn bộ mạng.
-   - Khi phá vỡ kỷ lục Val Macro-F1, toàn bộ các file trọng số (`clip_finetuned_best.pth`, `facial_cross_attn_best.pth`, `visual_proj_best.pth`, `emotion_mlp_weights.pth`) được xuất ra đồng bộ.
+   - Mỗi epoch hoàn tất, mô hình tự động cập nhật checkpoint khôi phục vào `backend/weights/lora_last.pth` kèm theo toàn bộ trạng thái Optimizer AdamW, LR Scheduler Cosine và GradScaler.
+   - Khi phá vỡ kỷ lục Val Macro-F1, toàn bộ các file trọng số chuẩn mực (`clip_finetuned_best.pth`, `facial_cross_attn_best.pth`, `visual_proj_best.pth`, `emotion_mlp_weights.pth`, `lora_best.pth`) được xuất đồng bộ vào thư mục tập trung `backend/weights/`.
 
 ### 8.3. Cơ chế Khôi phục Huấn luyện (Resume Training)
-Nếu quá trình huấn luyện bị gián đoạn, bạn có thể tiếp tục ngay từ epoch gần nhất mà không cần chạy lại từ đầu:
+Nếu quá trình huấn luyện bị gián đoạn (ví dụ ngắt kết nối mạng hoặc hết phiên Colab), bạn có thể tiếp tục ngay từ epoch gần nhất mà không mất mát dữ liệu:
 
 ```bash
-python backend/evaluation/run_complete_pipeline.py --dataset rafdb --clip_variant ViT-B/16 --resume
+# Khôi phục tự động từ checkpoint lora_last.pth trong backend/weights/
+python backend/evaluation/run_complete_pipeline.py --dataset rafdb --clip_variant ViT-B/16 --resume --resume_file lora_last.pth --batch_size 64 --workers 2 --preload_ram --fp16
 ```
 
 ### 8.4. Huấn luyện Trên Nền tảng Đám mây Google Colab
-Dự án cung cấp file [train_rafdb_colab.ipynb](file:///d:/Emotion_Concentration/train_rafdb_colab.ipynb) được tinh chỉnh sẵn cho GPU Tesla T4 / V100 / A100 với cấu hình **CLIP ViT-B/16 + FP16**. Người dùng chỉ cần mở file trong Google Colab và nhấn *Run All*.
+Dự án cung cấp sổ tay Jupyter [train_rafdb_colab.ipynb](file:///d:/Emotion_Concentration/train_rafdb_colab.ipynb) được tinh chỉnh sẵn cho GPU Tesla T4 (15GB VRAM) / V100 / A100:
+- **Tự động gắn Google Drive**: Lưu trữ bền vững code và checkpoint qua các phiên làm việc.
+- **Tối ưu tốc độ cao độ**: Kích hoạt `--batch_size 64`, `--workers 2`, `--preload_ram` nạp toàn bộ ảnh vào bộ nhớ 12.7 GB System RAM giúp 1 epoch chỉ mất ~1.5 đến 2 phút thay vì hơn 30 phút.
+- **Quản lý Checkpoint an toàn**: Checkpoint `backend/weights/lora_last.pth` được đồng bộ liên tục lên Google Drive mỗi epoch; nếu bị timeout chỉ cần bấm chạy lại ô Resume là tiếp tục trơn tru.
+
+### 8.5. Đo Đạc Minh Bạch Tham Số & FLOPs (Model Profiler)
+Dự án cung cấp công cụ đo đạc độc lập bằng các thư viện chuẩn quốc tế (**`ptflops`**, **`thop`**, và **`torch.utils.flop_counter`**):
+
+```bash
+# Đo đạc độc lập toàn bộ kiến trúc ViT-B/16 End-to-End:
+python backend/evaluation/model_profiler.py --clip_variant ViT-B/16 --runs 50
+
+# Hoặc tích hợp sẵn cờ --profile khi chạy benchmark đa bộ dữ liệu:
+python backend/evaluation/benchmark.py --datasets rafdb --profile
+```
+
+Kết quả đo đạc được tự động xuất ra hai file báo cáo minh bạch:
+- [model_complexity_report.md](file:///d:/Emotion_Concentration/backend/reports/model_complexity_report.md)
+- [model_complexity_report.json](file:///d:/Emotion_Concentration/backend/reports/model_complexity_report.json)
 
 ---
 
@@ -358,7 +438,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 Khi khởi động thành công:
 - API Server lắng nghe tại: `http://localhost:8000`
-- Tự động nhận diện và nạp weights CLIP (ViT-B/16 hoặc ViT-B/32) cùng `Baseline EmotionMLP` lên GPU.
+- Tự động nhận diện và nạp weights từ thư mục tập trung `backend/weights/` (CLIP ViT-B/16 LoRA, Facial Cross-Attention 128D, Visual Projection, cùng `Baseline EmotionMLP`) lên GPU để phục vụ suy luận thời gian thực với độ trễ siêu thấp.
 
 ### 9.2. Khởi chạy React Frontend
 

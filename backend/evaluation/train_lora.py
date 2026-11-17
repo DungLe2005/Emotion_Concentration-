@@ -191,7 +191,9 @@ class FocalLoss(nn.Module):
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         num_classes = inputs.size(-1)
         with torch.no_grad():
-            smooth_targets = torch.full_like(inputs, self.label_smoothing / (num_classes - 1))
+            smooth_targets = torch.full_like(
+                inputs, self.label_smoothing / (num_classes - 1)
+            )
             smooth_targets.scatter_(1, targets.unsqueeze(1), 1.0 - self.label_smoothing)
 
         log_p = F.log_softmax(inputs, dim=-1)
@@ -304,9 +306,10 @@ class MultimodalLoRAModel(nn.Module):
         h_vis = self.visual_proj(img_feats)
 
         # 3. Tính tương đồng ngữ nghĩa với 7 Prompt Text (7D)
-        prompt_sims = img_norm @ self.cached_text_norm.to(
-            device=img_norm.device, dtype=img_norm.dtype
-        ).T
+        prompt_sims = (
+            img_norm
+            @ self.cached_text_norm.to(device=img_norm.device, dtype=img_norm.dtype).T
+        )
 
         # 4. Facial Keypoint Queries Cross-Attention (128D)
         h_facial = self.facial_cross_attn(patch_tokens)
@@ -357,12 +360,16 @@ def load_clip_backbone(variant: str = "ViT-B/16", device: str = "cuda") -> nn.Mo
             sd = torch.load(local_pth, map_location=device, weights_only=False)
             patch_w = sd.get("visual.conv1.weight", None)
             if patch_w is not None and patch_w.shape[-1] == expected_patch_size:
-                print(f"  -> Nạp CLIP ViT ({variant}) từ checkpoint local có sẵn: {local_pth}")
+                print(
+                    f"  -> Nạp CLIP ViT ({variant}) từ checkpoint local có sẵn: {local_pth}"
+                )
                 model = clip.model.build_model(sd).to(device)
                 return model.float()
             else:
                 curr_size = patch_w.shape[-1] if patch_w is not None else "Unknown"
-                print(f"  ℹ️ Checkpoint local có patch size {curr_size}, khác với yêu cầu {expected_patch_size}. Chuyển sang clip.load('{variant}')...")
+                print(
+                    f"  ℹ️ Checkpoint local có patch size {curr_size}, khác với yêu cầu {expected_patch_size}. Chuyển sang clip.load('{variant}')..."
+                )
         except Exception as e:
             print(f"  ⚠️ Nạp checkpoint local thất bại ({e}), chuyển sang clip.load...")
 
@@ -416,15 +423,9 @@ def run_training(args):
         print(
             f"  - Cơ chế Split: Stratified Split {args.val_ratio * 100:.1f}% từ Train sang Validation (Chống rò rỉ 100%):"
         )
-        print(
-            f"    + Train sạch (Cập nhật Weights)       : {len(train_paths):,} ảnh"
-        )
-        print(
-            f"    + Validation (Early Stopping & Best F1): {len(val_paths):,} ảnh"
-        )
-        print(
-            f"    + Test Set (Cách ly 100% tuyệt đối)    : {len(test_paths):,} ảnh"
-        )
+        print(f"    + Train sạch (Cập nhật Weights)       : {len(train_paths):,} ảnh")
+        print(f"    + Validation (Early Stopping & Best F1): {len(val_paths):,} ảnh")
+        print(f"    + Test Set (Cách ly 100% tuyệt đối)    : {len(test_paths):,} ảnh")
 
     if args.dry_run:
         print("\n⚡ [DRY-RUN] Giới hạn dữ liệu để kiểm thử nhanh quy trình...")
@@ -437,18 +438,40 @@ def run_training(args):
         f"  - Tổng số mẫu nạp: Train={len(train_paths)} | Val={len(val_paths)} | Test={len(test_paths)}"
     )
 
-    train_ds = MultimodalEmotionDataset(train_paths, train_labels, transform=get_train_transform())
-    val_ds = MultimodalEmotionDataset(val_paths, val_labels, transform=get_val_transform())
-    test_ds = MultimodalEmotionDataset(test_paths, test_labels, transform=get_val_transform()) if test_paths else None
+    train_ds = MultimodalEmotionDataset(
+        train_paths, train_labels, transform=get_train_transform()
+    )
+    val_ds = MultimodalEmotionDataset(
+        val_paths, val_labels, transform=get_val_transform()
+    )
+    test_ds = (
+        MultimodalEmotionDataset(test_paths, test_labels, transform=get_val_transform())
+        if test_paths
+        else None
+    )
 
     train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=True
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.workers,
+        pin_memory=True,
     )
     val_loader = DataLoader(
-        val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True
+        val_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=True,
     )
     test_loader = (
-        DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True)
+        DataLoader(
+            test_ds,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.workers,
+            pin_memory=True,
+        )
         if test_ds
         else None
     )
@@ -527,42 +550,62 @@ def run_training(args):
     # 5. Class Weights & Loss
     class_counts = np.bincount(train_labels, minlength=len(STANDARD_EMOTIONS))
     total_samples = len(train_labels)
-    class_weights = total_samples / (len(STANDARD_EMOTIONS) * np.maximum(class_counts, 1).astype(float))
+    class_weights = total_samples / (
+        len(STANDARD_EMOTIONS) * np.maximum(class_counts, 1).astype(float)
+    )
     class_weights = torch.tensor(class_weights, dtype=torch.float, device=device)
     criterion = FocalLoss(alpha=class_weights, gamma=2.0, label_smoothing=0.05)
 
-    scaler = torch.amp.GradScaler("cuda", init_scale=args.init_scale) if args.fp16 and device.type == "cuda" else None
+    scaler = (
+        torch.amp.GradScaler("cuda", init_scale=args.init_scale)
+        if args.fp16 and device.type == "cuda"
+        else None
+    )
 
     # Resume checkpoint nếu được yêu cầu
     start_epoch = 1
     best_val_f1 = 0.0
     patience_counter = 0
-    if args.resume:
+    if args.resume or args.resume_file:
         resume_candidates = []
         if args.resume_file:
+            # 1. Đường dẫn trực tiếp nếu tồn tại
+            if os.path.exists(args.resume_file):
+                resume_candidates.append(os.path.abspath(args.resume_file))
+            # 2. Thử ghép với resume_dir nếu có
             if args.resume_dir:
                 resume_candidates.append(os.path.join(args.resume_dir, args.resume_file))
+            # 3. Tìm trong các thư mục chuẩn
             resume_candidates.extend([
-                os.path.join(BACKEND_DIR, "..", "resume", args.resume_file),
+                os.path.join(WEIGHTS_DIR, args.resume_file),
                 os.path.join(args.save_dir, args.resume_file),
+                os.path.join(BACKEND_DIR, "..", "resume", args.resume_file),
                 os.path.join("/content/drive/MyDrive/edufocus_weights_rafdb", args.resume_file),
             ])
         else:
             if args.resume_dir:
-                resume_candidates.extend([
-                    os.path.join(args.resume_dir, "lora_last.pth"),
-                    os.path.join(args.resume_dir, "lora_best.pth"),
-                ])
-            resume_candidates.extend([
-                os.path.join(WEIGHTS_DIR, "lora_last.pth"),
-                os.path.join(WEIGHTS_DIR, "lora_best.pth"),
-                os.path.join(BACKEND_DIR, "..", "resume", "lora_last.pth"),
-                os.path.join(args.save_dir, "lora_last.pth"),
-                os.path.join("/content/drive/MyDrive/edufocus_weights_rafdb", "lora_last.pth"),
-                os.path.join(BACKEND_DIR, "..", "resume", "lora_best.pth"),
-                os.path.join(args.save_dir, "lora_best.pth"),
-                os.path.join("/content/drive/MyDrive/edufocus_weights_rafdb", "lora_best.pth"),
-            ])
+                resume_candidates.extend(
+                    [
+                        os.path.join(args.resume_dir, "lora_last.pth"),
+                        os.path.join(args.resume_dir, "lora_best.pth"),
+                    ]
+                )
+            resume_candidates.extend(
+                [
+                    os.path.join(WEIGHTS_DIR, "lora_last.pth"),
+                    os.path.join(WEIGHTS_DIR, "lora_best.pth"),
+                    os.path.join(BACKEND_DIR, "..", "resume", "lora_last.pth"),
+                    os.path.join(args.save_dir, "lora_last.pth"),
+                    os.path.join(
+                        "/content/drive/MyDrive/edufocus_weights_rafdb", "lora_last.pth"
+                    ),
+                    os.path.join(BACKEND_DIR, "..", "resume", "lora_best.pth"),
+                    os.path.join(args.save_dir, "lora_best.pth"),
+                    os.path.join(
+                        "/content/drive/MyDrive/edufocus_weights_rafdb", "lora_best.pth"
+                    ),
+                ]
+            )
 
         found_ckpt = None
         for p in resume_candidates:
@@ -578,7 +621,9 @@ def run_training(args):
                     load_lora_state_dict(model.clip, ckpt["lora_state_dict"])
                     print("  ✅ Đã phục hồi LoRA weights.")
                 elif "model_state_dict" in ckpt:
-                    print("  ⚠️ Cảnh báo: Checkpoint chứa 'model_state_dict' (phiên bản cũ sequential unfreeze), không phải LoRA!")
+                    print(
+                        "  ⚠️ Cảnh báo: Checkpoint chứa 'model_state_dict' (phiên bản cũ sequential unfreeze), không phải LoRA!"
+                    )
 
                 if "visual_proj" in ckpt:
                     try:
@@ -588,16 +633,22 @@ def run_training(args):
                         print(f"  ⚠️ Không thể nạp VisualProjection ({e})")
                 if "facial_cross_attn" in ckpt:
                     try:
-                        model.facial_cross_attn.load_state_dict(ckpt["facial_cross_attn"])
+                        model.facial_cross_attn.load_state_dict(
+                            ckpt["facial_cross_attn"]
+                        )
                         print("  ✅ Đã phục hồi FacialQueryCrossAttention.")
                     except Exception as e:
-                        print(f"  ⚠️ Checkpoint có kích thước FacialCrossAttn cũ không khớp kiến trúc 128D ({e})")
+                        print(
+                            f"  ⚠️ Checkpoint có kích thước FacialCrossAttn cũ không khớp kiến trúc 128D ({e})"
+                        )
                 if "head" in ckpt:
                     try:
                         model.head.load_state_dict(ckpt["head"])
                         print("  ✅ Đã phục hồi EmotionMLP Head.")
                     except Exception as e:
-                        print(f"  ⚠️ Checkpoint có kích thước Head cũ không khớp kiến trúc 647D ({e})")
+                        print(
+                            f"  ⚠️ Checkpoint có kích thước Head cũ không khớp kiến trúc 647D ({e})"
+                        )
                 if "optimizer" in ckpt:
                     try:
                         optimizer.load_state_dict(ckpt["optimizer"])
@@ -620,12 +671,16 @@ def run_training(args):
                 start_epoch = ckpt.get("epoch", 0) + 1
                 best_val_f1 = ckpt.get("best_val_f1", ckpt.get("val_f1", 0.0))
                 patience_counter = ckpt.get("patience_counter", 0)
-                print(f"  🎉 Nạp thành công! Bắt đầu tiếp tục từ Epoch {start_epoch}, Best Val F1 hiện tại: {best_val_f1:.4f}")
+                print(
+                    f"  🎉 Nạp thành công! Bắt đầu tiếp tục từ Epoch {start_epoch}, Best Val F1 hiện tại: {best_val_f1:.4f}"
+                )
             except Exception as e:
                 print(f"  ❌ Lỗi khi nạp checkpoint {found_ckpt}: {e}")
                 print("  ⚠️ Bắt đầu huấn luyện từ Epoch 1.")
         else:
-            print(f"\n⚠️ [RESUME CẢNH BÁO] Không tìm thấy file checkpoint nào trong các vị trí tìm kiếm:")
+            print(
+                f"\n⚠️ [RESUME CẢNH BÁO] Không tìm thấy file checkpoint nào trong các vị trí tìm kiếm:"
+            )
             for p in resume_candidates[:4]:
                 print(f"    - {p}")
             print(f"  ➡️ Huấn luyện sẽ bắt đầu từ Epoch 1.")
@@ -640,9 +695,13 @@ def run_training(args):
         model.train()
         total_train_loss = 0.0
 
-        pbar = safe_tqdm(train_loader, desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Train]")
+        pbar = safe_tqdm(
+            train_loader, desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Train]"
+        )
         for imgs, lbls in pbar:
-            imgs, lbls = imgs.to(device, non_blocking=True), lbls.to(device, non_blocking=True)
+            imgs, lbls = imgs.to(device, non_blocking=True), lbls.to(
+                device, non_blocking=True
+            )
             optimizer.zero_grad()
 
             if scaler is not None:
@@ -672,8 +731,12 @@ def run_training(args):
         val_loss = 0.0
         val_preds, val_targets = [], []
         with torch.no_grad():
-            for imgs, lbls in safe_tqdm(val_loader, desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Val]"):
-                imgs, lbls = imgs.to(device, non_blocking=True), lbls.to(device, non_blocking=True)
+            for imgs, lbls in safe_tqdm(
+                val_loader, desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Val]"
+            ):
+                imgs, lbls = imgs.to(device, non_blocking=True), lbls.to(
+                    device, non_blocking=True
+                )
                 if scaler is not None:
                     with torch.amp.autocast("cuda"):
                         logits = model(imgs)
@@ -738,7 +801,11 @@ def run_training(args):
         if os.path.exists(drive_sync_dir):
             try:
                 import shutil
-                shutil.copy2(os.path.join(WEIGHTS_DIR, "lora_last.pth"), os.path.join(drive_sync_dir, "lora_last.pth"))
+
+                shutil.copy2(
+                    os.path.join(WEIGHTS_DIR, "lora_last.pth"),
+                    os.path.join(drive_sync_dir, "lora_last.pth"),
+                )
             except Exception:
                 pass
 
@@ -748,16 +815,26 @@ def run_training(args):
             patience_counter = 0
             checkpoint_data["best_val_f1"] = best_val_f1
             checkpoint_data["patience_counter"] = patience_counter
-            print(f"  ⭐ [KỶ LỤC MỚI] Đạt Best Val F1: {best_val_f1:.4f}! Đang lưu toàn bộ trọng số vào '{os.path.relpath(WEIGHTS_DIR, BACKEND_DIR)}/'...")
+            print(
+                f"  ⭐ [KỶ LỤC MỚI] Đạt Best Val F1: {best_val_f1:.4f}! Đang lưu toàn bộ trọng số vào '{os.path.relpath(WEIGHTS_DIR, BACKEND_DIR)}/'..."
+            )
 
             # 1. Lưu checkpoint lora_best.pth
             safe_torch_save(checkpoint_data, os.path.join(WEIGHTS_DIR, "lora_best.pth"))
-            safe_torch_save(checkpoint_data, os.path.join(args.save_dir, "lora_best.pth"))
-            safe_torch_save(checkpoint_data, os.path.join(resume_root_dir, "lora_best.pth"))
+            safe_torch_save(
+                checkpoint_data, os.path.join(args.save_dir, "lora_best.pth")
+            )
+            safe_torch_save(
+                checkpoint_data, os.path.join(resume_root_dir, "lora_best.pth")
+            )
             if os.path.exists(drive_sync_dir):
                 try:
                     import shutil
-                    shutil.copy2(os.path.join(WEIGHTS_DIR, "lora_best.pth"), os.path.join(drive_sync_dir, "lora_best.pth"))
+
+                    shutil.copy2(
+                        os.path.join(WEIGHTS_DIR, "lora_best.pth"),
+                        os.path.join(drive_sync_dir, "lora_best.pth"),
+                    )
                 except Exception:
                     pass
 
@@ -765,29 +842,56 @@ def run_training(args):
             models_dir = os.path.join(BACKEND_DIR, "models")
             os.makedirs(models_dir, exist_ok=True)
             for target_dir in [WEIGHTS_DIR, models_dir]:
-                safe_torch_save(model.visual_proj.state_dict(), os.path.join(target_dir, "visual_proj_best.pth"))
-                safe_torch_save(model.facial_cross_attn.state_dict(), os.path.join(target_dir, "facial_cross_attn_best.pth"))
+                safe_torch_save(
+                    model.visual_proj.state_dict(),
+                    os.path.join(target_dir, "visual_proj_best.pth"),
+                )
+                safe_torch_save(
+                    model.facial_cross_attn.state_dict(),
+                    os.path.join(target_dir, "facial_cross_attn_best.pth"),
+                )
 
             # Lưu trọng số Baseline EmotionMLP
             for target_dir in [WEIGHTS_DIR, BACKEND_DIR]:
-                safe_torch_save(model.head.state_dict(), os.path.join(target_dir, "emotion_mlp_weights.pth"))
-                safe_torch_save(model.head.state_dict(), os.path.join(target_dir, f"emotion_mlp_weights_{args.dataset.lower()}.pth"))
-                safe_torch_save(model.head.state_dict(), os.path.join(target_dir, "emotion_resmlp_weights.pth"))
+                safe_torch_save(
+                    model.head.state_dict(),
+                    os.path.join(target_dir, "emotion_mlp_weights.pth"),
+                )
+                safe_torch_save(
+                    model.head.state_dict(),
+                    os.path.join(
+                        target_dir, f"emotion_mlp_weights_{args.dataset.lower()}.pth"
+                    ),
+                )
+                safe_torch_save(
+                    model.head.state_dict(),
+                    os.path.join(target_dir, "emotion_resmlp_weights.pth"),
+                )
 
             print(f"  ✅ Đã lưu trọng số vào thư mục tập trung: {WEIGHTS_DIR}")
 
             # 3. MERGE LORA WEIGHTS VÀO CLIP ĐỂ XUẤT CHUẨN OPENAI CLIP (302 keys)
-            print("  🔄 Đang Merge LoRA weights vào bản sao CLIP ViT để xuất 'clip_finetuned_best.pth'...")
+            print(
+                "  🔄 Đang Merge LoRA weights vào bản sao CLIP ViT để xuất 'clip_finetuned_best.pth'..."
+            )
             merge_lora_weights(model.clip)
             clean_clip_sd = get_clean_clip_state_dict(model.clip)
-            safe_torch_save(clean_clip_sd, os.path.join(WEIGHTS_DIR, "clip_finetuned_best.pth"))
-            safe_torch_save(clean_clip_sd, os.path.join(models_dir, "clip_finetuned_best.pth"))
+            safe_torch_save(
+                clean_clip_sd, os.path.join(WEIGHTS_DIR, "clip_finetuned_best.pth")
+            )
+            safe_torch_save(
+                clean_clip_sd, os.path.join(models_dir, "clip_finetuned_best.pth")
+            )
             unmerge_lora_weights(model.clip)
-            print("  ✅ Đã xuất 'clip_finetuned_best.pth' chuẩn OpenAI CLIP (302 keys) tương thích 100% downstream!")
+            print(
+                "  ✅ Đã xuất 'clip_finetuned_best.pth' chuẩn OpenAI CLIP (302 keys) tương thích 100% downstream!"
+            )
         else:
             patience_counter += 1
             if args.patience > 0 and patience_counter >= args.patience:
-                print(f"\n🛑 Kích hoạt Early Stopping: Val F1 không cải thiện sau {args.patience} epochs.")
+                print(
+                    f"\n🛑 Kích hoạt Early Stopping: Val F1 không cải thiện sau {args.patience} epochs."
+                )
                 break
 
     # 7. Đánh giá cuối cùng trên Test Set

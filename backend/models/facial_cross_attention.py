@@ -116,13 +116,13 @@ class FacialDecoderLayer(nn.Module):
     def forward(self, queries: torch.Tensor, patch_tokens: torch.Tensor) -> torch.Tensor:
         # 1. Pre-LN Self-Attention + Residual
         q_norm = self.norm_self(queries)
-        sa_out, _ = self.self_attn(query=q_norm, key=q_norm, value=q_norm)
+        sa_out, _ = self.self_attn(q_norm, q_norm, q_norm)
         queries = queries + sa_out
 
         # 2. Pre-LN Cross-Attention + Residual
         q_norm = self.norm_q(queries)
         kv_norm = self.norm_kv(patch_tokens)
-        ca_out, _ = self.cross_attn(query=q_norm, key=kv_norm, value=kv_norm)
+        ca_out, _ = self.cross_attn(q_norm, kv_norm, kv_norm)
         queries = queries + ca_out
 
         # 3. Pre-LN FFN + Residual

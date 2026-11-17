@@ -144,6 +144,17 @@ class MultiDatasetBenchmark:
             y_test = ds_data["y_train"]
             split_used = "train"
 
+        # Tự động điều chỉnh số chiều nếu cache cũ (ví dụ 544D) khác với số chiều mô hình (647D)
+        feat_dim = X_test.shape[1]
+        if feat_dim != self.input_dim:
+            print(f"[Benchmark Cảnh báo] Số chiều cache ({feat_dim}D) khác với mô hình ({self.input_dim}D). Đang tự động bù chuẩn hóa...")
+            if feat_dim < self.input_dim:
+                # Giữ nguyên 519D đầu (512D visual + 7D prompt), bù 0 cho 128D cross-attention
+                pad = np.zeros((X_test.shape[0], self.input_dim - feat_dim), dtype=np.float32)
+                X_test = np.concatenate([X_test, pad], axis=1)
+            else:
+                X_test = X_test[:, :self.input_dim]
+
         X_tensor = torch.tensor(X_test, dtype=torch.float32)
         y_tensor = torch.tensor(y_test, dtype=torch.long)
         loader = DataLoader(TensorDataset(X_tensor, y_tensor), batch_size=64, shuffle=False)
@@ -273,6 +284,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Multi-Dataset Benchmark Evaluator")
     parser.add_argument("--weights", type=str, default=None, help="File trọng số mô hình MLP (auto-detect nếu không chỉ định)")
     parser.add_argument("--datasets", nargs="+", default=None, help="Danh sách các datasets để đánh giá")
+    parser.add_argument("--profile", action="store_true", help="Bật đo đạc minh bạch số lượng tham số & khối lượng phép tính FLOPs/MACs")
+    parser.add_argument("--clip_variant", type=str, default="auto", help="Biến thể CLIP khi profile: ViT-B/16, ViT-B/32, hoặc auto")
     args = parser.parse_args()
 
     # Nếu không chỉ định weights, tự động tìm theo dataset
@@ -285,3 +298,14 @@ if __name__ == "__main__":
 
     benchmark = MultiDatasetBenchmark(model_weights_path=weights_path, input_dim=None)
     benchmark.run_benchmark_suite(dataset_names=args.datasets)
+
+    if args.profile:
+        print("\n" + "=" * 70)
+        print("  TIẾN HÀNH ĐO ĐẠC MINH BẠCH THAM SỐ VÀ KHỐI LƯỢNG PHÉP TÍNH (FLOPs)")
+        print("=" * 70)
+        try:
+            from evaluation.model_profiler import ModelProfiler
+            profiler = ModelProfiler(clip_variant=args.clip_variant)
+            profiler.run_full_profiling_suite()
+        except Exception as e:
+            print(f"[Profile Lỗi] Không thể chạy ModelProfiler: {e}")
