@@ -294,7 +294,8 @@ def apply_lora_to_clip_visual(
 def get_lora_parameters(clip_model: nn.Module) -> List[nn.Parameter]:
     """Lấy danh sách tất cả các tham số LoRA cần huấn luyện trong CLIP."""
     lora_params = []
-    for module in clip_model.visual.modules():
+    vis = clip_model.visual if hasattr(clip_model, "visual") else clip_model
+    for module in vis.modules():
         if isinstance(module, (LoRALinear, LoRAMultiheadAttention)):
             for name, param in module.named_parameters(recurse=False):
                 if param.requires_grad:
@@ -307,14 +308,16 @@ def merge_lora_weights(clip_model: nn.Module):
     Merge vĩnh viễn trọng số LoRA vào trọng số gốc W0 của CLIP Visual Transformer.
     Sau khi merge, mô hình trở thành OpenAI CLIP chuẩn, không tốn thêm chi phí tính toán.
     """
-    for module in clip_model.visual.modules():
+    vis = clip_model.visual if hasattr(clip_model, "visual") else clip_model
+    for module in vis.modules():
         if isinstance(module, (LoRALinear, LoRAMultiheadAttention)):
             module.merge()
 
 
 def unmerge_lora_weights(clip_model: nn.Module):
     """Khôi phục lại trọng số gốc W0 bằng cách trừ đi phần delta LoRA."""
-    for module in clip_model.visual.modules():
+    vis = clip_model.visual if hasattr(clip_model, "visual") else clip_model
+    for module in vis.modules():
         if isinstance(module, (LoRALinear, LoRAMultiheadAttention)):
             module.unmerge()
 

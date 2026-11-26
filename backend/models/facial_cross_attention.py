@@ -16,6 +16,7 @@ Nâng cấp Hướng A (DETR-style Learnable Facial Keypoint Queries Cross-Atten
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional, Dict, Any, List
 
 
 def extract_clip_visual_and_patches(visual_encoder: nn.Module, images: torch.Tensor):
@@ -147,36 +148,47 @@ class FacialQueryCrossAttention(nn.Module):
         num_layers: int = 2,
         out_dim: int = 128,
         dropout: float = 0.1,
+        decoder_dim: Optional[int] = None,
     ):
         super().__init__()
         self.num_queries = num_queries
         self.embed_dim = embed_dim
+        self.decoder_dim = decoder_dim if decoder_dim is not None else embed_dim
         self.num_layers = num_layers
         self.out_dim = out_dim
 
-        # 32 Learnable Queries đại diện tiềm ẩn cho các vùng giải phẫu cơ mặt
-        self.queries = nn.Parameter(torch.randn(1, num_queries, embed_dim) * 0.02)
+        # Chiếu nút thắt cổ chai nếu decoder_dim < embed_dim (Ví dụ: 768 -> 256)
+        if self.decoder_dim != self.embed_dim:
+            self.in_proj = nn.Sequential(
+                nn.Linear(embed_dim, self.decoder_dim),
+                nn.LayerNorm(self.decoder_dim),
+            )
+        else:
+            self.in_proj = nn.Identity()
 
-        # 2 tầng Transformer Decoder Layers
+        # 32 Learnable Queries đại diện tiềm ẩn cho các vùng giải phẫu cơ mặt
+        self.queries = nn.Parameter(torch.randn(1, num_queries, self.decoder_dim) * 0.02)
+
+        # Transformer Decoder Layers
         self.layers = nn.ModuleList([
             FacialDecoderLayer(
-                embed_dim=embed_dim,
+                embed_dim=self.decoder_dim,
                 num_heads=num_heads,
-                dim_feedforward=embed_dim * 2,
+                dim_feedforward=self.decoder_dim * 2,
                 dropout=dropout,
             )
             for _ in range(num_layers)
         ])
 
-        self.norm_out = nn.LayerNorm(embed_dim)
+        self.norm_out = nn.LayerNorm(self.decoder_dim)
 
         # Attentive Query Pooling: Học trọng số quan trọng của từng query
-        self.pool_attn = nn.Linear(embed_dim, 1)
+        self.pool_attn = nn.Linear(self.decoder_dim, 1)
 
         # Chiếu xuống out_dim (128D) với LayerNorm cuối cùng để cân bằng phân phối với VisualProjection (512D)
-        proj_hidden_dim = 256 if out_dim >= 64 else 128
+        proj_hidden_dim = 256 if (out_dim >= 64 and self.decoder_dim > 256) else min(self.decoder_dim, 256)
         self.proj_head = nn.Sequential(
-            nn.Linear(embed_dim, proj_hidden_dim),
+            nn.Linear(self.decoder_dim, proj_hidden_dim),
             nn.LayerNorm(proj_hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -205,19 +217,65 @@ class FacialQueryCrossAttention(nn.Module):
         """
         B = patch_tokens.shape[0]
 
+        # 0. Chiếu đặc trưng patch tokens nếu decoder_dim < embed_dim
+        kv = self.in_proj(patch_tokens)  # [B, N_patches, decoder_dim]
+
         # 1. Expand Learnable Queries cho toàn bộ batch
-        q = self.queries.expand(B, -1, -1)  # [B, 32, 768]
+        q = self.queries.expand(B, -1, -1)  # [B, 32, decoder_dim]
 
-        # 2. Chuyển tiếp qua 2 tầng Decoder (Self-Attention + Cross-Attention + FFN)
+        # 2. Chuyển tiếp qua các tầng Decoder (Self-Attention + Cross-Attention + FFN)
         for layer in self.layers:
-            q = layer(q, patch_tokens)
+            q = layer(q, kv)
 
-        q = self.norm_out(q)  # [B, 32, 768]
+        q = self.norm_out(q)  # [B, 32, decoder_dim]
 
         # 3. Attentive Pooling qua 32 queries
         attn_weights = F.softmax(self.pool_attn(q), dim=1)  # [B, 32, 1]
-        x_pooled = torch.sum(q * attn_weights, dim=1)        # [B, 768]
+        x_pooled = torch.sum(q * attn_weights, dim=1)        # [B, decoder_dim]
 
         # 4. Chiếu về out_dim (mặc định 128D)
         facial_features = self.proj_head(x_pooled)  # [B, 128]
         return facial_features
+
+
+def get_fca_ablation_variants() -> List[Dict[str, Any]]:
+    """
+    Sinh bảng đối chiếu các cấu hình Ablation của Facial Cross-Attention Module:
+    - Base (Mặc định hiện tại: 14.44M params, chiếm 90.5% trainable params).
+    - Medium (1 Layer: 7.35M params, giảm 49.1%).
+    - Compact (Bottleneck 384D, 2 Layers: 3.88M params, giảm 73.1%).
+    - Lightweight (Bottleneck 256D, 2 Layers: 1.82M params, giảm 87.4%).
+    - Tiny (Bottleneck 256D, 1 Layer: 1.03M params, giảm 92.9%).
+    """
+    variants_cfg = [
+        {"name": "FCA-Base (Hiện tại)", "embed_dim": 768, "decoder_dim": None, "num_layers": 2, "num_heads": 8, "out_dim": 128, "note": "Checkpoint đang dùng"},
+        {"name": "FCA-Medium (1 Layer)", "embed_dim": 768, "decoder_dim": None, "num_layers": 1, "num_heads": 8, "out_dim": 128, "note": "Giảm 1 tầng decoder"},
+        {"name": "FCA-Compact (Bottleneck 384D)", "embed_dim": 768, "decoder_dim": 384, "num_layers": 2, "num_heads": 6, "out_dim": 128, "note": "Nút thắt 384D"},
+        {"name": "FCA-Lightweight (Bottleneck 256D)", "embed_dim": 768, "decoder_dim": 256, "num_layers": 2, "num_heads": 4, "out_dim": 128, "note": "Khuyến nghị cân bằng"},
+        {"name": "FCA-Tiny (Bottleneck 256D, 1 Layer)", "embed_dim": 768, "decoder_dim": 256, "num_layers": 1, "num_heads": 4, "out_dim": 128, "note": "Bản siêu nhẹ"},
+    ]
+
+    results = []
+    for cfg in variants_cfg:
+        m = FacialQueryCrossAttention(
+            embed_dim=cfg["embed_dim"],
+            decoder_dim=cfg["decoder_dim"],
+            num_layers=cfg["num_layers"],
+            num_heads=cfg["num_heads"],
+            out_dim=cfg["out_dim"],
+        )
+        total_p = sum(p.numel() for p in m.parameters())
+        size_fp32 = round(total_p * 4 / (1024 * 1024), 2)
+        size_fp16 = round(total_p * 2 / (1024 * 1024), 2)
+        results.append({
+            "name": cfg["name"],
+            "decoder_dim": cfg["decoder_dim"] or cfg["embed_dim"],
+            "num_layers": cfg["num_layers"],
+            "num_heads": cfg["num_heads"],
+            "total_params": total_p,
+            "size_fp32_mb": size_fp32,
+            "size_fp16_mb": size_fp16,
+            "reduction_vs_base": round((1.0 - total_p / 14442369) * 100, 1),
+            "note": cfg["note"],
+        })
+    return results

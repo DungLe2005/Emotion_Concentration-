@@ -104,6 +104,13 @@ class EmotionPipeline:
             self.clip_model, device=self.device
         )
 
+        # Giải phóng triệt để Text Transformer khỏi GPU VRAM sau khi đã có buffer [7, 512]
+        for attr in ["transformer", "token_embedding", "positional_embedding", "ln_final", "text_projection"]:
+            if hasattr(self.clip_model, attr):
+                setattr(self.clip_model, attr, None)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         # 2.05 Nạp FacialQueryCrossAttention & VisualProjection nếu có
         self.facial_cross_attn = None
         self.visual_proj = None

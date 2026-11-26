@@ -45,7 +45,7 @@ Hệ thống giải quyết 4 thách thức cốt lõi của bài toán FER truy
 1. **Biến dạng khuôn mặt cục bộ do phát ngôn hoặc cử động (Speaking artifacts)**: Học sinh trả lời bài, thảo luận, ngáp làm sai lệch biểu cảm nếu chỉ phân loại ảnh tĩnh.
 2. **Khắc phục giới hạn độ phân giải không gian của Vision Transformer**: Nâng cấp lên **CLIP ViT-B/16**, tăng mật độ Patch Tokens từ 49 lên **196 tokens** ($14 \times 14$), giúp mô hình nắm bắt sắc nét các vi biểu cảm ở đuôi mắt, mí mắt, khóe miệng.
 3. **Huấn luyện đồng bộ 1 giai đoạn (True End-to-End Joint Training)**: Toàn bộ các khối LoRA của CLIP, Visual Projection, Facial Query Cross-Attention và Baseline EmotionMLP Head được tối ưu hóa gradient cùng lúc, loại bỏ hiện tượng lệch phân phối khi đóng băng feature để train riêng.
-4. **Tối ưu hóa độ trễ thời gian thực**: Toàn bộ luồng suy luận Deep Learning chạy thuần GPU qua PyTorch, đạt tốc độ từ 35–55 FPS trên GPU phổ thông.
+4. **Tối ưu hóa độ trễ thời gian thực**: Thông lượng bộ phân loại Deep Learning (Classifier Throughput) đạt **115 – 178 faces/s** trên GPU phổ thông (RTX 3050). Tốc độ khung hình toàn diện (End-to-End Video FPS bao gồm giải mã, phát hiện khuôn mặt RetinaFace/MediaPipe, landmark và tracking) đạt **12 – 16.5 FPS** cho lớp học từ 1 đến 5 học sinh, và duy trì mượt mà **5 – 8 FPS** cho lớp học đông (10 đến 20 học sinh).
 
 ---
 
