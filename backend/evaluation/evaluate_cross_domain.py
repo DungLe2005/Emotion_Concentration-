@@ -254,8 +254,11 @@ def load_model_for_eval(
                 target_ckpt = c
                 break
 
-    print(f"📦 Đang khởi tạo backbone CLIP ({clip_variant}) trên {device_obj}...")
-    clip_model = load_clip_backbone(variant=clip_variant, device=device)
+    import clip
+
+    print(f"📦 Đang khởi tạo backbone CLIP gốc W0 ({clip_variant}) trên {device_obj}...")
+    clip_model, _ = clip.load(clip_variant, device=device, jit=False)
+    clip_model = clip_model.float()
 
     model = MultimodalLoRAModel(
         clip_model=clip_model,

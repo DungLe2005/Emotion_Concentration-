@@ -215,26 +215,46 @@ class FocalLoss(nn.Module):
 class MultimodalEmotionDataset(Dataset):
     """Dataset nạp ảnh khuôn mặt cho mô hình Multimodal CLIP LoRA."""
 
-    def __init__(self, image_paths: List[str], labels: List[int], transform=None):
+    def __init__(
+        self,
+        image_paths: List[str],
+        labels: List[int],
+        transform=None,
+        preload_ram: bool = False,
+    ):
         self.image_paths = image_paths
         self.labels = labels
         self.transform = transform
+        self.preload_ram = preload_ram
+        self.cached_images = None
+        if self.preload_ram and len(image_paths) > 0:
+            print(f"  ⚡ Đang nạp trước {len(image_paths):,} ảnh vào RAM (Preload RAM)...")
+            self.cached_images = []
+            for p in image_paths:
+                try:
+                    img = Image.open(p).convert("RGB")
+                except Exception:
+                    img = Image.new("RGB", (224, 224), (128, 128, 128))
+                self.cached_images.append(img)
+            print("  ✅ Đã nạp xong toàn bộ ảnh vào RAM!")
 
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, idx: int):
-        img_path = self.image_paths[idx]
-        label = self.labels[idx]
-        try:
-            image = Image.open(img_path).convert("RGB")
-        except Exception:
-            image = Image.new("RGB", (224, 224), (128, 128, 128))
+        if self.cached_images is not None:
+            image = self.cached_images[idx]
+        else:
+            img_path = self.image_paths[idx]
+            try:
+                image = Image.open(img_path).convert("RGB")
+            except Exception:
+                image = Image.new("RGB", (224, 224), (128, 128, 128))
 
         if self.transform:
             image = self.transform(image)
 
-        return image, torch.tensor(label, dtype=torch.long)
+        return image, torch.tensor(self.labels[idx], dtype=torch.long)
 
 
 class MultimodalLoRAModel(nn.Module):
@@ -438,14 +458,26 @@ def run_training(args):
         f"  - Tổng số mẫu nạp: Train={len(train_paths)} | Val={len(val_paths)} | Test={len(test_paths)}"
     )
 
+    preload = getattr(args, "preload_ram", False)
     train_ds = MultimodalEmotionDataset(
-        train_paths, train_labels, transform=get_train_transform()
+        train_paths,
+        train_labels,
+        transform=get_train_transform(),
+        preload_ram=preload,
     )
     val_ds = MultimodalEmotionDataset(
-        val_paths, val_labels, transform=get_val_transform()
+        val_paths,
+        val_labels,
+        transform=get_val_transform(),
+        preload_ram=preload,
     )
     test_ds = (
-        MultimodalEmotionDataset(test_paths, test_labels, transform=get_val_transform())
+        MultimodalEmotionDataset(
+            test_paths,
+            test_labels,
+            transform=get_val_transform(),
+            preload_ram=preload,
+        )
         if test_paths
         else None
     )
@@ -1048,6 +1080,11 @@ def main():
         type=int,
         default=0,
         help="Số worker nạp dữ liệu (Mặc định: 0 cho Windows)",
+    )
+    parser.add_argument(
+        "--preload_ram",
+        action="store_true",
+        help="Nạp trước toàn bộ ảnh vào RAM để triệt tiêu thời gian I/O đĩa (Khuyên dùng cho Colab)",
     )
     parser.add_argument(
         "--save_dir",
