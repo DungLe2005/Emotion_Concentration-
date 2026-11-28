@@ -53,6 +53,8 @@ os.makedirs(REPORTS_DIR, exist_ok=True)
 import clip
 from dataset.dataset_loader import (
     DatasetRegistry,
+    AutoBenchmarkDatasetReader,
+    RAFDBDatasetReader,
     STANDARD_EMOTIONS,
     STANDARD_LABEL_TO_IDX,
     get_emotion_centroid_embeddings,
@@ -365,35 +367,40 @@ def make_warmup_cosine_scheduler(
     return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def load_clip_backbone(variant: str = "ViT-B/16", device: str = "cuda") -> nn.Module:
+def load_clip_backbone(
+    variant: str = "ViT-B/16",
+    device: str = "cuda",
+    use_local_clip: bool = False,
+) -> nn.Module:
     """
     Nạp CLIP ViT an toàn:
-    - Nếu có sẵn clip_finetuned_best.pth local khớp đúng kiến trúc: nạp từ state_dict.
-    - Ngược lại: gọi clip.load (nạp từ cache hoặc tải về).
+    - Mặc định gọi clip.load() để lấy backbone gốc W0 sạch (tránh nhiễu từ checkpoint của dataset khác).
+    - Nếu bật use_local_clip=True (hoặc offline): ưu tiên nạp từ clip_finetuned_best.pth nếu khớp kiến trúc.
     """
     expected_patch_size = 16 if "16" in variant else 32
-    local_pth = os.path.join(WEIGHTS_DIR, "clip_finetuned_best.pth")
-    if not os.path.exists(local_pth):
-        local_pth = os.path.join(BACKEND_DIR, "models", "clip_finetuned_best.pth")
-    if os.path.exists(local_pth):
-        try:
-            sd = torch.load(local_pth, map_location=device, weights_only=False)
-            patch_w = sd.get("visual.conv1.weight", None)
-            if patch_w is not None and patch_w.shape[-1] == expected_patch_size:
-                print(
-                    f"  -> Nạp CLIP ViT ({variant}) từ checkpoint local có sẵn: {local_pth}"
-                )
-                model = clip.model.build_model(sd).to(device)
-                return model.float()
-            else:
-                curr_size = patch_w.shape[-1] if patch_w is not None else "Unknown"
-                print(
-                    f"  ℹ️ Checkpoint local có patch size {curr_size}, khác với yêu cầu {expected_patch_size}. Chuyển sang clip.load('{variant}')..."
-                )
-        except Exception as e:
-            print(f"  ⚠️ Nạp checkpoint local thất bại ({e}), chuyển sang clip.load...")
+    if use_local_clip:
+        local_pth = os.path.join(WEIGHTS_DIR, "clip_finetuned_best.pth")
+        if not os.path.exists(local_pth):
+            local_pth = os.path.join(BACKEND_DIR, "models", "clip_finetuned_best.pth")
+        if os.path.exists(local_pth):
+            try:
+                sd = torch.load(local_pth, map_location=device, weights_only=False)
+                patch_w = sd.get("visual.conv1.weight", None)
+                if patch_w is not None and patch_w.shape[-1] == expected_patch_size:
+                    print(
+                        f"  -> Nạp CLIP ViT ({variant}) từ checkpoint local có sẵn: {local_pth}"
+                    )
+                    model = clip.model.build_model(sd).to(device)
+                    return model.float()
+                else:
+                    curr_size = patch_w.shape[-1] if patch_w is not None else "Unknown"
+                    print(
+                        f"  ℹ️ Checkpoint local có patch size {curr_size}, khác với yêu cầu {expected_patch_size}. Chuyển sang clip.load('{variant}')..."
+                    )
+            except Exception as e:
+                print(f"  ⚠️ Nạp checkpoint local thất bại ({e}), chuyển sang clip.load...")
 
-    print(f"  -> Nạp CLIP ViT thông qua clip.load('{variant}')...")
+    print(f"  -> Nạp CLIP ViT gốc W0 thông qua clip.load('{variant}')...")
     model, _ = clip.load(variant, device=device, jit=False)
     return model.float()
 
@@ -413,7 +420,17 @@ def run_training(args):
     print(f"  - FP16 (AMP): {args.fp16}")
 
     # 1. Nạp Dataset
-    reader = DatasetRegistry.get_reader(args.dataset)
+    data_dir = getattr(args, "data_dir", None)
+    if data_dir:
+        if not os.path.exists(data_dir):
+            raise FileNotFoundError(f"Không tìm thấy thư mục dữ liệu: {data_dir}")
+        ds_lower = args.dataset.lower()
+        if ds_lower == "rafdb":
+            reader = RAFDBDatasetReader("rafdb", data_dir)
+        else:
+            reader = AutoBenchmarkDatasetReader(args.dataset, data_dir)
+    else:
+        reader = DatasetRegistry.get_reader(args.dataset)
     splits = reader.get_splits()
     if "train" not in splits or ("val" not in splits and "test" not in splits):
         raise ValueError(
@@ -459,24 +476,32 @@ def run_training(args):
     )
 
     preload = getattr(args, "preload_ram", False)
+    MAX_PRELOAD_IMAGES = 30000
+    preload_train = preload and len(train_paths) <= MAX_PRELOAD_IMAGES
+    if preload and not preload_train:
+        print(
+            f"  ⚠️ Tập Train có {len(train_paths):,} ảnh (> {MAX_PRELOAD_IMAGES:,}), tự động tắt preload_ram cho Train để tránh tràn RAM!"
+        )
+    preload_eval = preload and len(val_paths) <= MAX_PRELOAD_IMAGES
+
     train_ds = MultimodalEmotionDataset(
         train_paths,
         train_labels,
         transform=get_train_transform(),
-        preload_ram=preload,
+        preload_ram=preload_train,
     )
     val_ds = MultimodalEmotionDataset(
         val_paths,
         val_labels,
         transform=get_val_transform(),
-        preload_ram=preload,
+        preload_ram=preload_eval,
     )
     test_ds = (
         MultimodalEmotionDataset(
             test_paths,
             test_labels,
             transform=get_val_transform(),
-            preload_ram=preload,
+            preload_ram=(preload and len(test_paths) <= MAX_PRELOAD_IMAGES),
         )
         if test_paths
         else None
@@ -526,7 +551,11 @@ def run_training(args):
 
     # 3. Khởi tạo mô hình
     print("\n[1/4] Khởi tạo OpenAI CLIP Backbone & Tiêm LoRA...")
-    base_clip = load_clip_backbone(args.clip_variant, device=str(device))
+    base_clip = load_clip_backbone(
+        args.clip_variant,
+        device=str(device),
+        use_local_clip=getattr(args, "use_local_clip", False),
+    )
     model = MultimodalLoRAModel(
         clip_model=base_clip,
         target_blocks=target_blocks,
@@ -624,18 +653,20 @@ def run_training(args):
                 )
             resume_candidates.extend(
                 [
+                    os.path.join(args.save_dir, "lora_last.pth"),
+                    os.path.join(args.save_dir, "lora_best.pth"),
+                    os.path.join(
+                        f"/content/drive/MyDrive/edufocus_weights_{args.dataset.lower()}",
+                        "lora_last.pth",
+                    ),
+                    os.path.join(
+                        f"/content/drive/MyDrive/edufocus_weights_{args.dataset.lower()}",
+                        "lora_best.pth",
+                    ),
                     os.path.join(WEIGHTS_DIR, "lora_last.pth"),
                     os.path.join(WEIGHTS_DIR, "lora_best.pth"),
                     os.path.join(BACKEND_DIR, "..", "resume", "lora_last.pth"),
-                    os.path.join(args.save_dir, "lora_last.pth"),
-                    os.path.join(
-                        "/content/drive/MyDrive/edufocus_weights_rafdb", "lora_last.pth"
-                    ),
                     os.path.join(BACKEND_DIR, "..", "resume", "lora_best.pth"),
-                    os.path.join(args.save_dir, "lora_best.pth"),
-                    os.path.join(
-                        "/content/drive/MyDrive/edufocus_weights_rafdb", "lora_best.pth"
-                    ),
                 ]
             )
 
@@ -719,7 +750,6 @@ def run_training(args):
 
     # 6. Vòng lặp huấn luyện
     print("\n[2/4] Bắt đầu quá trình Huấn Luyện LoRA...")
-    patience_counter = 0
     history = {"train_loss": [], "val_loss": [], "val_acc": [], "val_f1": []}
 
     for epoch in range(start_epoch, args.epochs + 1):
@@ -807,7 +837,7 @@ def run_training(args):
         resume_root_dir = os.path.join(BACKEND_DIR, "..", "resume")
         os.makedirs(resume_root_dir, exist_ok=True)
         os.makedirs(args.save_dir, exist_ok=True)
-        drive_sync_dir = "/content/drive/MyDrive/edufocus_weights_rafdb"
+        drive_sync_dir = f"/content/drive/MyDrive/edufocus_weights_{args.dataset.lower()}"
 
         lora_sd = extract_lora_state_dict(model.clip)
         checkpoint_data = {
@@ -870,10 +900,11 @@ def run_training(args):
                 except Exception:
                     pass
 
-            # 2. Lưu module con vào thư mục weights tập trung (và đồng bộ sang models để tương thích ngược)
+            # 2. Lưu module con vào thư mục weights tập trung (và save_dir / models để tương thích ngược)
             models_dir = os.path.join(BACKEND_DIR, "models")
             os.makedirs(models_dir, exist_ok=True)
-            for target_dir in [WEIGHTS_DIR, models_dir]:
+            sub_target_dirs = list({os.path.abspath(d): d for d in [WEIGHTS_DIR, models_dir, args.save_dir]}.values())
+            for target_dir in sub_target_dirs:
                 safe_torch_save(
                     model.visual_proj.state_dict(),
                     os.path.join(target_dir, "visual_proj_best.pth"),
@@ -884,7 +915,8 @@ def run_training(args):
                 )
 
             # Lưu trọng số Baseline EmotionMLP
-            for target_dir in [WEIGHTS_DIR, BACKEND_DIR]:
+            head_target_dirs = list({os.path.abspath(d): d for d in [WEIGHTS_DIR, BACKEND_DIR, args.save_dir]}.values())
+            for target_dir in head_target_dirs:
                 safe_torch_save(
                     model.head.state_dict(),
                     os.path.join(target_dir, "emotion_mlp_weights.pth"),
@@ -900,7 +932,7 @@ def run_training(args):
                     os.path.join(target_dir, "emotion_resmlp_weights.pth"),
                 )
 
-            print(f"  ✅ Đã lưu trọng số vào thư mục tập trung: {WEIGHTS_DIR}")
+            print(f"  ✅ Đã lưu trọng số vào thư mục: {args.save_dir}")
 
             # 3. MERGE LORA WEIGHTS VÀO CLIP ĐỂ XUẤT CHUẨN OPENAI CLIP (302 keys)
             print(
@@ -908,12 +940,10 @@ def run_training(args):
             )
             merge_lora_weights(model.clip)
             clean_clip_sd = get_clean_clip_state_dict(model.clip)
-            safe_torch_save(
-                clean_clip_sd, os.path.join(WEIGHTS_DIR, "clip_finetuned_best.pth")
-            )
-            safe_torch_save(
-                clean_clip_sd, os.path.join(models_dir, "clip_finetuned_best.pth")
-            )
+            for target_dir in sub_target_dirs:
+                safe_torch_save(
+                    clean_clip_sd, os.path.join(target_dir, "clip_finetuned_best.pth")
+                )
             unmerge_lora_weights(model.clip)
             print(
                 "  ✅ Đã xuất 'clip_finetuned_best.pth' chuẩn OpenAI CLIP (302 keys) tương thích 100% downstream!"
@@ -929,10 +959,10 @@ def run_training(args):
     # 7. Đánh giá cuối cùng trên Test Set
     if test_loader:
         print("\n[3/4] Đánh giá mô hình tốt nhất trên Test Set...")
-        # Nạp lại weights tốt nhất từ thư mục weights tập trung
-        best_pth = os.path.join(WEIGHTS_DIR, "lora_best.pth")
+        # Nạp lại weights tốt nhất từ thư mục save_dir (ưu tiên) hoặc WEIGHTS_DIR
+        best_pth = os.path.join(args.save_dir, "lora_best.pth")
         if not os.path.exists(best_pth):
-            best_pth = os.path.join(args.save_dir, "lora_best.pth")
+            best_pth = os.path.join(WEIGHTS_DIR, "lora_best.pth")
         if os.path.exists(best_pth):
             ckpt = torch.load(best_pth, map_location=device, weights_only=False)
             if "lora_state_dict" in ckpt:
@@ -957,14 +987,18 @@ def run_training(args):
         test_preds, test_targets = [], []
         with torch.no_grad():
             for imgs, lbls in safe_tqdm(test_loader, desc="Testing"):
-                imgs = imgs.to(device)
-                logits = model(imgs)
+                imgs = imgs.to(device, non_blocking=True)
+                if scaler is not None:
+                    with torch.amp.autocast("cuda"):
+                        logits = model(imgs)
+                else:
+                    logits = model(imgs)
                 preds = torch.argmax(logits, dim=-1)
                 test_preds.extend(preds.cpu().numpy())
                 test_targets.extend(lbls.numpy())
 
         test_acc = accuracy_score(test_targets, test_preds)
-        test_f1 = f1_score(test_targets, test_preds, average="macro")
+        test_f1 = f1_score(test_targets, test_preds, average="macro", zero_division=0)
         print("\n" + "=" * 60)
         print(f"📊 KẾT QUẢ ĐÁNH GIÁ TRÊN TẬP TEST ({args.dataset.upper()}):")
         print(f"  - Test Accuracy : {test_acc * 100:.2f}%")
@@ -981,6 +1015,19 @@ def run_training(args):
                 zero_division=0,
             )
         )
+
+        # Lưu kết quả Test vào JSON
+        test_report = {
+            "dataset": args.dataset,
+            "num_samples": len(test_targets),
+            "test_accuracy": float(test_acc * 100.0),
+            "test_macro_f1": float(test_f1 * 100.0),
+            "checkpoint": best_pth,
+        }
+        report_json_path = os.path.join(REPORTS_DIR, f"test_report_{args.dataset.lower()}.json")
+        with open(report_json_path, "w", encoding="utf-8") as rf:
+            json.dump(test_report, rf, indent=2, ensure_ascii=False)
+        print(f"  ✅ Đã lưu báo cáo Test tại: {report_json_path}")
 
     # 8. Lưu lịch sử huấn luyện vào thư mục reports tập trung
     print("\n[4/4] Lưu lịch sử huấn luyện...")
@@ -1006,8 +1053,19 @@ def main():
     parser.add_argument(
         "--dataset",
         type=str,
-        default="new_data",
-        help="Tên dataset: new_data, rafdb, kmufed",
+        default="rafdb",
+        help="Tên dataset: rafdb, affectnet, affectnet7, ferplus, kmufed",
+    )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default=None,
+        help="Đường dẫn thư mục dữ liệu trực tiếp (VD: đường dẫn tải từ kagglehub)",
+    )
+    parser.add_argument(
+        "--use_local_clip",
+        action="store_true",
+        help="Dùng lại clip_finetuned_best.pth cục bộ làm backbone khởi tạo thay vì tải CLIP gốc W0",
     )
     parser.add_argument(
         "--epochs", type=int, default=70, help="Tổng số epoch tối đa (Mặc định: 70)"

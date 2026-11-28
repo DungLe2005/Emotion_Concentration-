@@ -94,28 +94,45 @@ RAFDB_LABEL_MAP = {
     "7": "neutral",
 }
 
-# Ánh xạ nhãn thư mục tổng quát (case-insensitive & synonyms)
+# Ánh xạ nhãn thư mục tổng quát cho FERPlus (tên tiếng Anh, case-insensitive)
 GENERIC_LABEL_MAP = {
     "angry": "angry",
     "anger": "angry",
-    "0": "angry",
     "disgust": "disgust",
     "disgusted": "disgust",
-    "1": "disgust",
     "fear": "fear",
     "fearful": "fear",
-    "2": "fear",
     "happy": "happy",
     "happiness": "happy",
-    "3": "happy",
     "neutral": "neutral",
-    "4": "neutral",
     "sad": "sad",
     "sadness": "sad",
-    "5": "sad",
     "surprise": "surprise",
     "surprised": "surprise",
-    "6": "surprise",
+}
+
+# Ánh xạ nhãn thư mục số cho AffectNet-7 (chuẩn AffectNet official ordering)
+# 0=Neutral, 1=Happy, 2=Sad, 3=Surprise, 4=Fear, 5=Disgust, 6=Angry
+AFFECTNET_LABEL_MAP = {
+    "0": "neutral",
+    "1": "happy",
+    "2": "sad",
+    "3": "surprise",
+    "4": "fear",
+    "5": "disgust",
+    "6": "angry",
+}
+
+# Ánh xạ nhãn thư mục số cho FER2013/FERPlus (nếu dùng thư mục số)
+# 0=Angry, 1=Disgust, 2=Fear, 3=Happy, 4=Neutral (Sad?), 5=Sad (Neutral?), 6=Surprise
+FER2013_NUMERIC_LABEL_MAP = {
+    "0": "angry",
+    "1": "disgust",
+    "2": "fear",
+    "3": "happy",
+    "4": "sad",
+    "5": "surprise",
+    "6": "neutral",
 }
 
 
@@ -191,6 +208,12 @@ class CrossDomainDataset(Dataset):
                 if os.path.exists(p) and os.path.isdir(p):
                     candidate_roots.append(p)
 
+        # Chọn bảng ánh xạ phù hợp theo loại dataset
+        if dataset_type == "affectnet":
+            numeric_map = AFFECTNET_LABEL_MAP
+        else:
+            numeric_map = FER2013_NUMERIC_LABEL_MAP
+
         for c_root in candidate_roots:
             subdirs = [d for d in os.listdir(c_root) if os.path.isdir(os.path.join(c_root, d))]
             matched_any = False
@@ -199,12 +222,17 @@ class CrossDomainDataset(Dataset):
                 # Bỏ qua lớp contempt (lớp thứ 8 không thuộc 7 basic emotions chuẩn)
                 if "contempt" in d_lower:
                     continue
-                std_name = GENERIC_LABEL_MAP.get(d_lower)
-                if not std_name:
-                    for k, v in GENERIC_LABEL_MAP.items():
-                        if k in d_lower:
-                            std_name = v
-                            break
+                # 1) Nếu tên thư mục là số (0-6), dùng bảng ánh xạ riêng theo dataset
+                if d_lower.isdigit() and d_lower in numeric_map:
+                    std_name = numeric_map[d_lower]
+                else:
+                    # 2) Nếu tên thư mục là chữ, dùng bảng ánh xạ tổng quát
+                    std_name = GENERIC_LABEL_MAP.get(d_lower)
+                    if not std_name:
+                        for k, v in GENERIC_LABEL_MAP.items():
+                            if k in d_lower:
+                                std_name = v
+                                break
                 if std_name and std_name in STANDARD_LABEL_TO_IDX:
                     matched_any = True
                     std_idx = STANDARD_LABEL_TO_IDX[std_name]
@@ -526,6 +554,12 @@ def main():
         default=REPORTS_DIR,
         help="Thư mục lưu báo cáo kết quả",
     )
+    parser.add_argument(
+        "--report_name",
+        type=str,
+        default="cross_domain_evaluation_report",
+        help="Tên file báo cáo (không gồm đuôi .md/.json)",
+    )
 
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -561,6 +595,7 @@ def main():
     if args.dataset in ("all", "ferplus"):
         fer_candidates = [
             args.ferplus_dir,
+            "/kaggle/input/ferplus",
             find_latest_kagglehub_cache("arnabkumarroy02/ferplus"),
             "/content/datasets/ferplus",
             "/content/datasets/ferplus/test",
@@ -573,7 +608,7 @@ def main():
                 fer_path = p
                 break
         if fer_path:
-            eval_targets.append(("ferplus", fer_path, "FERPlus Test Set (Cross-Domain 1)"))
+            eval_targets.append(("ferplus", fer_path, "FERPlus Test Set"))
         else:
             print("ℹ️ Chưa tìm thấy thư mục FERPlus test set. Hãy chạy cell tải arnabkumarroy02/ferplus.")
 
@@ -581,6 +616,7 @@ def main():
     if args.dataset in ("all", "affectnet"):
         aff_candidates = [
             args.affectnet_dir,
+            "/kaggle/input/affectnet7",
             find_latest_kagglehub_cache("lintongdai/affectnet7"),
             find_latest_kagglehub_cache("thienhuynh/affectnet-validation-set"),
             "/content/datasets/affectnet",
@@ -628,8 +664,8 @@ def main():
         except Exception as e:
             print(f"❌ Lỗi khi đánh giá tập {key}: {e}")
 
-    md_path = os.path.join(args.output_dir, "cross_domain_evaluation_report.md")
-    json_path = os.path.join(args.output_dir, "cross_domain_evaluation_report.json")
+    md_path = os.path.join(args.output_dir, f"{args.report_name}.md")
+    json_path = os.path.join(args.output_dir, f"{args.report_name}.json")
 
     generate_markdown_report(eval_results, md_path)
 

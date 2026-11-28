@@ -14,28 +14,44 @@ from typing import Dict, List, Optional, Tuple
 # Danh sách 7 cảm xúc chuẩn quốc tế
 STANDARD_EMOTIONS = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
 
-# Ánh xạ tên gọi cảm xúc (case-insensitive & synonyms)
+# Ánh xạ tên gọi cảm xúc (case-insensitive & synonyms) — chỉ dùng cho tên chữ
 SYNONYM_MAP = {
     "angry": "angry",
     "anger": "angry",
-    "0": "angry",
     "disgust": "disgust",
     "disgusted": "disgust",
-    "1": "disgust",
     "fear": "fear",
     "fearful": "fear",
-    "2": "fear",
     "happy": "happy",
     "happiness": "happy",
-    "3": "happy",
     "neutral": "neutral",
-    "4": "neutral",
     "sad": "sad",
     "sadness": "sad",
-    "5": "sad",
     "surprise": "surprise",
     "surprised": "surprise",
-    "6": "surprise",
+}
+
+# Ánh xạ nhãn thư mục số cho AffectNet-7 (chuẩn AffectNet official ordering)
+# 0=Neutral, 1=Happy, 2=Sad, 3=Surprise, 4=Fear, 5=Disgust, 6=Angry
+AFFECTNET_NUMERIC_MAP = {
+    "0": "neutral",
+    "1": "happy",
+    "2": "sad",
+    "3": "surprise",
+    "4": "fear",
+    "5": "disgust",
+    "6": "angry",
+}
+
+# Ánh xạ nhãn thư mục số cho FER2013/FERPlus (nếu dùng thư mục số)
+FER2013_NUMERIC_MAP = {
+    "0": "angry",
+    "1": "disgust",
+    "2": "fear",
+    "3": "happy",
+    "4": "sad",
+    "5": "surprise",
+    "6": "neutral",
 }
 
 # Các handle KaggleHub uy tín cho từng benchmark (ưu tiên arnabkumarroy02/ferplus & lintongdai/affectnet7)
@@ -87,7 +103,7 @@ def safe_link_or_copy(src_path: str, dst_path: str):
         shutil.copy2(src_path, dst_path)
 
 
-def discover_emotion_dirs(root_search_dir: str, target_split: str = "test") -> Dict[str, List[str]]:
+def discover_emotion_dirs(root_search_dir: str, target_split: str = "test", dataset_type: str = "ferplus") -> Dict[str, List[str]]:
     """
     Quét thông minh thư mục đã tải để gom các file ảnh theo 7 lớp cảm xúc chuẩn.
     Hỗ trợ cấu trúc đa dạng:
@@ -96,9 +112,16 @@ def discover_emotion_dirs(root_search_dir: str, target_split: str = "test") -> D
     - root/val/happy/img.jpg
     - root/Validation/Happy/img.jpg
     - root/angry/img.jpg
+    - root/val/0/img.jpg (AffectNet numeric folders)
     """
     valid_extensions = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
     found_images: Dict[str, List[str]] = {emo: [] for emo in STANDARD_EMOTIONS}
+
+    # Chọn bảng ánh xạ số phù hợp theo loại dataset
+    if dataset_type == "affectnet":
+        numeric_map = AFFECTNET_NUMERIC_MAP
+    else:
+        numeric_map = FER2013_NUMERIC_MAP
 
     candidate_subdirs = []
     for root, dirs, _ in os.walk(root_search_dir):
@@ -115,10 +138,15 @@ def discover_emotion_dirs(root_search_dir: str, target_split: str = "test") -> D
         for root, dirs, files in os.walk(s_root):
             base_folder = os.path.basename(root).lower()
             matched_emo = None
-            for key, std_name in SYNONYM_MAP.items():
-                if key in base_folder or base_folder == key:
-                    matched_emo = std_name
-                    break
+            # 1) Nếu tên thư mục là số, dùng bảng ánh xạ riêng theo dataset
+            if base_folder.isdigit() and base_folder in numeric_map:
+                matched_emo = numeric_map[base_folder]
+            else:
+                # 2) Nếu tên thư mục là chữ, dùng bảng synonyms
+                for key, std_name in SYNONYM_MAP.items():
+                    if key in base_folder or base_folder == key:
+                        matched_emo = std_name
+                        break
 
             if matched_emo:
                 for f in files:
@@ -130,10 +158,13 @@ def discover_emotion_dirs(root_search_dir: str, target_split: str = "test") -> D
         for root, dirs, files in os.walk(root_search_dir):
             base_folder = os.path.basename(root).lower()
             matched_emo = None
-            for key, std_name in SYNONYM_MAP.items():
-                if key in base_folder or base_folder == key:
-                    matched_emo = std_name
-                    break
+            if base_folder.isdigit() and base_folder in numeric_map:
+                matched_emo = numeric_map[base_folder]
+            else:
+                for key, std_name in SYNONYM_MAP.items():
+                    if key in base_folder or base_folder == key:
+                        matched_emo = std_name
+                        break
             if matched_emo:
                 for f in files:
                     if f.lower().endswith(valid_extensions):
@@ -193,7 +224,7 @@ def download_and_organize_benchmark(
         return None
 
     print(f"  🔍 Đang quét cấu trúc file và nhận diện 7 lớp cảm xúc...")
-    found_images = discover_emotion_dirs(download_dir, target_split=target_split)
+    found_images = discover_emotion_dirs(download_dir, target_split=target_split, dataset_type=target_folder_name)
 
     total_imgs = sum(len(v) for v in found_images.values())
     if total_imgs == 0:

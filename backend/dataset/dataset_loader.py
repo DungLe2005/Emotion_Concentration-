@@ -1,5 +1,6 @@
 import sys
 import os
+import glob
 import json
 import pandas as pd
 import torch
@@ -377,6 +378,167 @@ class RAFDBDatasetReader(FolderDatasetReader):
         )
 
 
+class AutoBenchmarkDatasetReader(BaseDatasetReader):
+    """
+    Bộ đọc tự động cho các benchmark tải từ KaggleHub / local như:
+    - AffectNet-7 (lintongdai/affectnet7): train/{0..6}, val/{0..6} (hoặc tên cảm xúc)
+      Quy ước số AffectNet: 0=neutral, 1=happy, 2=sad, 3=surprise, 4=fear, 5=disgust, 6=angry
+    - FERPlus (arnabkumarroy02/ferplus): train/{...}, validation/{...}, test/{...}
+      (Tự động bỏ qua lớp contempt để khớp 7 cảm xúc chuẩn)
+    """
+
+    GENERIC_TEXT_MAP = {
+        "angry": "angry",
+        "anger": "angry",
+        "disgust": "disgust",
+        "disgusted": "disgust",
+        "fear": "fear",
+        "fearful": "fear",
+        "happy": "happy",
+        "happiness": "happy",
+        "neutral": "neutral",
+        "sad": "sad",
+        "sadness": "sad",
+        "surprise": "surprise",
+        "surprised": "surprise",
+    }
+
+    AFFECTNET_NUMERIC_MAP = {
+        "0": "neutral",
+        "1": "happy",
+        "2": "sad",
+        "3": "surprise",
+        "4": "fear",
+        "5": "disgust",
+        "6": "angry",
+    }
+
+    FER2013_NUMERIC_MAP = {
+        "0": "angry",
+        "1": "disgust",
+        "2": "fear",
+        "3": "happy",
+        "4": "sad",
+        "5": "surprise",
+        "6": "neutral",
+    }
+
+    SPLIT_ALIASES = {
+        "train": ("train", "training", "train_set"),
+        "val": ("val", "validation", "val_set", "valid"),
+        "test": ("test", "testing", "test_set", "publictest", "privatetest"),
+    }
+
+    def __init__(self, dataset_name: str, root_dir: str):
+        super().__init__(dataset_name, root_dir)
+        self.is_affectnet = "affectnet" in dataset_name.lower()
+        self.numeric_map = (
+            self.AFFECTNET_NUMERIC_MAP
+            if self.is_affectnet
+            else self.FER2013_NUMERIC_MAP
+        )
+
+    def _resolve_emotion(self, folder_name: str) -> Optional[str]:
+        d_lower = folder_name.strip().lower()
+        if "contempt" in d_lower:
+            return None
+        if d_lower.isdigit() and d_lower in self.numeric_map:
+            return self.numeric_map[d_lower]
+        if d_lower in self.GENERIC_TEXT_MAP:
+            return self.GENERIC_TEXT_MAP[d_lower]
+        for k, v in self.GENERIC_TEXT_MAP.items():
+            if k in d_lower:
+                return v
+        return None
+
+    def _scan_split_dir(self, split_dir: str) -> Tuple[List[str], List[int]]:
+        valid_exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+        paths: List[str] = []
+        labels: List[int] = []
+        if not os.path.isdir(split_dir):
+            return paths, labels
+
+        for sub in sorted(os.listdir(split_dir)):
+            sub_path = os.path.join(split_dir, sub)
+            if not os.path.isdir(sub_path):
+                continue
+            std_emo = self._resolve_emotion(sub)
+            if std_emo and std_emo in STANDARD_LABEL_TO_IDX:
+                std_idx = STANDARD_LABEL_TO_IDX[std_emo]
+                for fname in os.listdir(sub_path):
+                    if fname.lower().endswith(valid_exts):
+                        paths.append(os.path.join(sub_path, fname))
+                        labels.append(std_idx)
+        return paths, labels
+
+    def get_splits(self) -> Dict[str, Tuple[List[str], List[int]]]:
+        if not os.path.exists(self.root_dir):
+            return {}
+
+        # Tìm các thư mục split (có thể nằm ở root_dir hoặc lồng 1-2 cấp bên trong)
+        found_splits: Dict[str, Tuple[List[str], List[int]]] = {}
+        for root, dirs, _ in os.walk(self.root_dir):
+            # Giới hạn độ sâu tìm thư mục split để tránh quét thừa
+            rel = os.path.relpath(root, self.root_dir)
+            depth = 0 if rel == "." else len(rel.split(os.sep))
+            if depth > 3:
+                continue
+
+            for d in dirs:
+                d_lower = d.lower()
+                for split_key, aliases in self.SPLIT_ALIASES.items():
+                    if d_lower in aliases:
+                        p, l = self._scan_split_dir(os.path.join(root, d))
+                        if len(p) > 0:
+                            if split_key in found_splits:
+                                found_splits[split_key][0].extend(p)
+                                found_splits[split_key][1].extend(l)
+                            else:
+                                found_splits[split_key] = (p, l)
+
+        # Với dataset như AffectNet-7 chỉ có train + val (không có test riêng):
+        # Đẩy val chính thức thành 'test' để giữ nguyên vẹn 100% cho đánh giá cuối,
+        # còn train_lora.py sẽ tự tách val_ratio từ train cho early stopping (zero leakage).
+        if "val" in found_splits and "test" not in found_splits:
+            found_splits["test"] = found_splits.pop("val")
+
+        return found_splits
+
+
+def find_dataset_cache_dir(
+    kaggle_handle: str, extra_paths: Optional[List[str]] = None
+) -> Optional[str]:
+    """Tìm thư mục dataset từ cache KaggleHub, /kaggle/input hoặc đường dẫn cục bộ."""
+    candidates: List[str] = []
+    if extra_paths:
+        candidates.extend(extra_paths)
+
+    slug = kaggle_handle.split("/")[-1]
+    candidates.extend(
+        [
+            f"/kaggle/input/{slug}",
+            f"/kaggle/input/{kaggle_handle}",
+        ]
+    )
+
+    user_home = os.path.expanduser("~")
+    base_pattern = os.path.join(
+        user_home, ".cache", "kagglehub", "datasets", kaggle_handle, "versions", "*"
+    )
+    matches = glob.glob(base_pattern)
+    if matches:
+        matches.sort(key=os.path.getmtime, reverse=True)
+        candidates.extend(matches)
+    candidates.append(
+        os.path.join(user_home, ".cache", "kagglehub", "datasets", kaggle_handle)
+    )
+
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
 class DatasetRegistry:
     _registry: Dict[str, BaseDatasetReader] = {}
 
@@ -398,7 +560,13 @@ class DatasetRegistry:
         return list(cls._registry.keys())
 
     @classmethod
-    def auto_discover_defaults(cls, project_root: str = r"d:\Emotion_Concentration"):
+    def auto_discover_defaults(cls, project_root: Optional[str] = None):
+        if project_root is None:
+            project_root = os.environ.get(
+                "PROJECT_ROOT",
+                os.path.abspath(os.path.join(BACKEND_DIR, "..")),
+            )
+
         new_data_path = os.path.join(project_root, "new_data")
         if os.path.exists(new_data_path):
             cls.register("new_data", FolderDatasetReader("new_data", new_data_path))
@@ -410,6 +578,29 @@ class DatasetRegistry:
         rafdb_path = os.path.join(project_root, "RAF_DB")
         if os.path.exists(rafdb_path):
             cls.register("rafdb", RAFDBDatasetReader("rafdb", rafdb_path))
+
+        ferplus_path = find_dataset_cache_dir(
+            "arnabkumarroy02/ferplus",
+            extra_paths=[
+                os.path.join(project_root, "datasets", "ferplus"),
+                "/content/datasets/ferplus",
+            ],
+        )
+        if ferplus_path:
+            cls.register("ferplus", AutoBenchmarkDatasetReader("ferplus", ferplus_path))
+
+        affectnet_path = find_dataset_cache_dir(
+            "lintongdai/affectnet7",
+            extra_paths=[
+                os.path.join(project_root, "datasets", "affectnet"),
+                os.path.join(project_root, "datasets", "affectnet7"),
+                "/content/datasets/affectnet",
+                "/content/datasets/affectnet7",
+            ],
+        )
+        if affectnet_path:
+            cls.register("affectnet", AutoBenchmarkDatasetReader("affectnet", affectnet_path))
+            cls.register("affectnet7", AutoBenchmarkDatasetReader("affectnet7", affectnet_path))
 
         config_path = os.path.join(BACKEND_DIR, "dataset_config.json")
         if os.path.exists(config_path):
