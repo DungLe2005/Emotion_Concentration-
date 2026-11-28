@@ -14,6 +14,9 @@ if BACKEND_DIR not in sys.path:
 STANDARD_EMOTIONS = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
 STANDARD_LABEL_TO_IDX = {emotion: idx for idx, emotion in enumerate(STANDARD_EMOTIONS)}
 
+FERPLUS_8_EMOTIONS = ["angry", "disgust", "fear", "happy", "neutral", "sad", "surprise", "contempt"]
+FERPLUS_8_LABEL_TO_IDX = {emotion: idx for idx, emotion in enumerate(FERPLUS_8_EMOTIONS)}
+
 DEFAULT_EMOTION_PROMPTS = [
     "a face with an angry expression, furrowed eyebrows and intense glare",  # 0: angry
     "a face showing disgust, wrinkled nose and raised upper lip",  # 1: disgust
@@ -24,30 +27,43 @@ DEFAULT_EMOTION_PROMPTS = [
     "a shocked surprised face with raised eyebrows and gasping mouth",  # 6: surprise
 ]
 
+EXTRA_EMOTION_PROMPTS = {
+    "contempt": "a face showing contempt, asymmetrical smirk with one raised lip corner and skeptical gaze",
+}
+
 
 def get_emotion_centroid_embeddings(
     clip_model,
     device: Optional[torch.device] = None,
     desc_path: Optional[str] = None,
+    emotions: Optional[List[str]] = None,
 ) -> torch.Tensor:
     """
-    Tính toán vector biểu diễn ngữ nghĩa chuẩn hóa (7, 512) cho 7 lớp cảm xúc chuẩn:
+    Tính toán vector biểu diễn ngữ nghĩa chuẩn hóa (N_classes, 512) cho danh sách cảm xúc:
     Nếu có file fer_descriptions.json (mô tả Action Units chi tiết sinh bởi LLM):
       -> Sử dụng kỹ thuật Prompt Ensembling (Centroid Embedding - CuPL CVPR 2023):
          Mã hóa toàn bộ các câu mô tả vi biểu cảm cho từng cảm xúc, tính trung bình cộng (Centroid)
          và L2-normalize lại. Cho ra mỏ neo ngữ nghĩa cực kỳ vững chắc, bao phủ đầy đủ các Action Units.
-    Nếu không có -> Fallback về 7 câu prompt đơn lẻ mặc định.
+    Nếu không có -> Fallback về prompt đơn lẻ mặc định.
 
     Returns:
-        torch.Tensor hình dạng (7, 512) kiểu float32 trên thiết bị `device`.
+        torch.Tensor hình dạng (len(emotions), 512) kiểu float32 trên thiết bị `device`.
     """
     import clip
+
+    target_emotions = emotions or STANDARD_EMOTIONS
 
     if device is None:
         device = next(clip_model.parameters()).device
 
     if desc_path is None:
         desc_path = os.path.join(BACKEND_DIR, "fer_descriptions.json")
+
+    default_prompt_map = {
+        emo: DEFAULT_EMOTION_PROMPTS[i]
+        for i, emo in enumerate(STANDARD_EMOTIONS)
+    }
+    default_prompt_map.update(EXTRA_EMOTION_PROMPTS)
 
     if os.path.exists(desc_path):
         try:
@@ -57,10 +73,12 @@ def get_emotion_centroid_embeddings(
 
             centroids = []
             with torch.no_grad():
-                for idx, emo in enumerate(STANDARD_EMOTIONS):
+                for emo in target_emotions:
                     prompts = data_lower.get(emo, [])
+                    if not prompts and emo == "angry":
+                        prompts = data_lower.get("anger", [])
                     if not prompts:
-                        prompts = [DEFAULT_EMOTION_PROMPTS[idx]]
+                        prompts = [default_prompt_map.get(emo, f"a face showing {emo} expression")]
                     toks = clip.tokenize(prompts, truncate=True).to(device)
                     feats = clip_model.encode_text(toks).float()
                     feats = feats / (feats.norm(dim=-1, keepdim=True) + 1e-7)
@@ -70,7 +88,7 @@ def get_emotion_centroid_embeddings(
 
             text_features = torch.cat(centroids, dim=0).float()
             print(
-                f"[AI Text] 🎯 Đã nạp & tính Centroid Embedding từ '{os.path.basename(desc_path)}' (7 cảm xúc x Action Units, shape {list(text_features.shape)})!"
+                f"[AI Text] 🎯 Đã nạp & tính Centroid Embedding từ '{os.path.basename(desc_path)}' ({len(target_emotions)} cảm xúc, shape {list(text_features.shape)})!"
             )
             return text_features
         except Exception as e:
@@ -79,11 +97,15 @@ def get_emotion_centroid_embeddings(
             )
 
     # Fallback mặc định
-    toks = clip.tokenize(DEFAULT_EMOTION_PROMPTS).to(device)
+    fallback_prompts = [
+        default_prompt_map.get(emo, f"a face showing {emo} expression")
+        for emo in target_emotions
+    ]
+    toks = clip.tokenize(fallback_prompts).to(device)
     with torch.no_grad():
         feats = clip_model.encode_text(toks).float()
         text_features = (feats / (feats.norm(dim=-1, keepdim=True) + 1e-7)).float()
-    print("[AI Text] Đã tạo text features chuẩn từ 7 câu prompt mặc định (7, 512).")
+    print(f"[AI Text] Đã tạo text features chuẩn từ {len(target_emotions)} câu prompt mặc định ({len(target_emotions)}, 512).")
     return text_features
 
 
@@ -401,6 +423,7 @@ class AutoBenchmarkDatasetReader(BaseDatasetReader):
         "sadness": "sad",
         "surprise": "surprise",
         "surprised": "surprise",
+        "contempt": "contempt",
     }
 
     AFFECTNET_NUMERIC_MAP = {
@@ -429,9 +452,15 @@ class AutoBenchmarkDatasetReader(BaseDatasetReader):
         "test": ("test", "testing", "test_set", "publictest", "privatetest"),
     }
 
-    def __init__(self, dataset_name: str, root_dir: str):
+    def __init__(self, dataset_name: str, root_dir: str, include_contempt: Optional[bool] = None):
         super().__init__(dataset_name, root_dir)
         self.is_affectnet = "affectnet" in dataset_name.lower()
+        if include_contempt is None:
+            self.include_contempt = "ferplus" in dataset_name.lower()
+        else:
+            self.include_contempt = include_contempt
+        self.emotions = FERPLUS_8_EMOTIONS if self.include_contempt else STANDARD_EMOTIONS
+        self.label_to_idx = FERPLUS_8_LABEL_TO_IDX if self.include_contempt else STANDARD_LABEL_TO_IDX
         self.numeric_map = (
             self.AFFECTNET_NUMERIC_MAP
             if self.is_affectnet
@@ -441,7 +470,7 @@ class AutoBenchmarkDatasetReader(BaseDatasetReader):
     def _resolve_emotion(self, folder_name: str) -> Optional[str]:
         d_lower = folder_name.strip().lower()
         if "contempt" in d_lower:
-            return None
+            return "contempt" if self.include_contempt else None
         if d_lower.isdigit() and d_lower in self.numeric_map:
             return self.numeric_map[d_lower]
         if d_lower in self.GENERIC_TEXT_MAP:
@@ -463,8 +492,8 @@ class AutoBenchmarkDatasetReader(BaseDatasetReader):
             if not os.path.isdir(sub_path):
                 continue
             std_emo = self._resolve_emotion(sub)
-            if std_emo and std_emo in STANDARD_LABEL_TO_IDX:
-                std_idx = STANDARD_LABEL_TO_IDX[std_emo]
+            if std_emo and std_emo in self.label_to_idx:
+                std_idx = self.label_to_idx[std_emo]
                 for fname in os.listdir(sub_path):
                     if fname.lower().endswith(valid_exts):
                         paths.append(os.path.join(sub_path, fname))

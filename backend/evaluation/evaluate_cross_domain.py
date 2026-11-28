@@ -45,7 +45,12 @@ REPORTS_DIR = os.path.join(BACKEND_DIR, "reports")
 os.makedirs(WEIGHTS_DIR, exist_ok=True)
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
-from dataset.dataset_loader import STANDARD_EMOTIONS, STANDARD_LABEL_TO_IDX
+from dataset.dataset_loader import (
+    STANDARD_EMOTIONS,
+    FERPLUS_8_EMOTIONS,
+    STANDARD_LABEL_TO_IDX,
+    FERPLUS_8_LABEL_TO_IDX,
+)
 from evaluation.train_lora import (
     MultimodalLoRAModel,
     load_clip_backbone,
@@ -109,6 +114,7 @@ GENERIC_LABEL_MAP = {
     "sadness": "sad",
     "surprise": "surprise",
     "surprised": "surprise",
+    "contempt": "contempt",
 }
 
 # Ánh xạ nhãn thư mục số cho AffectNet-7 (chuẩn AffectNet official ordering)
@@ -160,9 +166,17 @@ class CrossDomainDataset(Dataset):
     - AffectNet-7 (lintongdai/affectnet7): val/{anger, disgust, ...}/ hoặc 7 thư mục cảm xúc
     """
 
-    def __init__(self, root_dir: str, dataset_type: str = "auto", transform=None):
+    def __init__(
+        self,
+        root_dir: str,
+        dataset_type: str = "auto",
+        transform=None,
+        include_contempt: bool = False,
+    ):
         self.root_dir = os.path.abspath(root_dir)
         self.transform = transform or get_val_transform()
+        self.include_contempt = include_contempt
+        self.label_to_idx = FERPLUS_8_LABEL_TO_IDX if include_contempt else STANDARD_LABEL_TO_IDX
         self.image_paths: List[str] = []
         self.labels: List[int] = []
 
@@ -219,8 +233,8 @@ class CrossDomainDataset(Dataset):
             matched_any = False
             for d in subdirs:
                 d_lower = d.lower()
-                # Bỏ qua lớp contempt (lớp thứ 8 không thuộc 7 basic emotions chuẩn)
-                if "contempt" in d_lower:
+                # Bỏ qua lớp contempt nếu mô hình chỉ có 7 lớp
+                if "contempt" in d_lower and not self.include_contempt:
                     continue
                 # 1) Nếu tên thư mục là số (0-6), dùng bảng ánh xạ riêng theo dataset
                 if d_lower.isdigit() and d_lower in numeric_map:
@@ -233,9 +247,9 @@ class CrossDomainDataset(Dataset):
                             if k in d_lower:
                                 std_name = v
                                 break
-                if std_name and std_name in STANDARD_LABEL_TO_IDX:
+                if std_name and std_name in self.label_to_idx:
                     matched_any = True
-                    std_idx = STANDARD_LABEL_TO_IDX[std_name]
+                    std_idx = self.label_to_idx[std_name]
                     folder_path = os.path.join(c_root, d)
                     for fname in os.listdir(folder_path):
                         if fname.lower().endswith(valid_exts):
@@ -288,21 +302,35 @@ def load_model_for_eval(
     clip_model, _ = clip.load(clip_variant, device=device, jit=False)
     clip_model = clip_model.float()
 
+    # Tự động nhận diện số lớp (7 lớp chuẩn hoặc 8 lớp FERPlus) từ checkpoint
+    ckpt = None
+    emotions = STANDARD_EMOTIONS
+    if target_ckpt and os.path.exists(target_ckpt):
+        print(f"👉 Đọc metadata checkpoint từ: {target_ckpt}")
+        try:
+            ckpt = torch.load(target_ckpt, map_location=device_obj, weights_only=False)
+            if "emotions" in ckpt and isinstance(ckpt["emotions"], list):
+                emotions = ckpt["emotions"]
+            elif "head" in ckpt and "fc3.weight" in ckpt["head"]:
+                n_cls = int(ckpt["head"]["fc3.weight"].shape[0])
+                emotions = FERPLUS_8_EMOTIONS if n_cls == 8 else STANDARD_EMOTIONS
+        except Exception as e:
+            print(f"⚠️ Lỗi đọc trước checkpoint ({e})")
+
     model = MultimodalLoRAModel(
         clip_model=clip_model,
         target_blocks=range(4, 12),
         lora_rank=8,
         lora_alpha=16.0,
         lora_dropout=0.0,
-        num_classes=len(STANDARD_EMOTIONS),
+        num_classes=len(emotions),
         facial_out_dim=128,
+        emotions=emotions,
     ).to(device_obj)
 
-    ckpt_meta = {}
-    if target_ckpt and os.path.exists(target_ckpt):
-        print(f"👉 Nạp checkpoint từ: {target_ckpt}")
+    ckpt_meta = {"num_classes": len(emotions), "emotions": emotions}
+    if ckpt is not None:
         try:
-            ckpt = torch.load(target_ckpt, map_location=device_obj, weights_only=False)
             if "lora_state_dict" in ckpt:
                 load_lora_state_dict(model.clip, ckpt["lora_state_dict"])
             if "visual_proj" in ckpt:
@@ -311,13 +339,13 @@ def load_model_for_eval(
                 model.facial_cross_attn.load_state_dict(ckpt["facial_cross_attn"])
             if "head" in ckpt:
                 model.head.load_state_dict(ckpt["head"])
-            ckpt_meta = {
+            ckpt_meta.update({
                 "epoch": ckpt.get("epoch", "N/A"),
                 "val_acc": ckpt.get("val_acc", 0.0),
                 "val_f1": ckpt.get("val_f1", 0.0),
                 "best_val_f1": ckpt.get("best_val_f1", 0.0),
-            }
-            print(f"✅ Nạp checkpoint thành công! (Epoch: {ckpt_meta.get('epoch')}, Best Val F1: {ckpt_meta.get('best_val_f1', 0.0):.4f})")
+            })
+            print(f"✅ Nạp checkpoint thành công! ({len(emotions)} lớp, Epoch: {ckpt_meta.get('epoch')}, Best Val F1: {ckpt_meta.get('best_val_f1', 0.0):.4f})")
         except Exception as e:
             print(f"⚠️ Lỗi khi nạp checkpoint: {e}. Thử nạp từng file weights...")
     else:
@@ -380,13 +408,14 @@ def evaluate_single_dataset(
     bal_acc = balanced_accuracy_score(y_true, y_pred) * 100.0
     macro_f1 = precision_recall_fscore_support(y_true, y_pred, average="macro", zero_division=0)[2] * 100.0
     weighted_f1 = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)[2] * 100.0
+    emotions = getattr(model, "emotions", STANDARD_EMOTIONS)
     p_per_class, r_per_class, f1_per_class, support = precision_recall_fscore_support(
-        y_true, y_pred, labels=list(range(len(STANDARD_EMOTIONS))), zero_division=0
+        y_true, y_pred, labels=list(range(len(emotions))), zero_division=0
     )
-    cm = confusion_matrix(y_true, y_pred, labels=list(range(len(STANDARD_EMOTIONS))))
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(len(emotions))))
 
     per_class_stats = {}
-    for i, emo in enumerate(STANDARD_EMOTIONS):
+    for i, emo in enumerate(emotions):
         per_class_stats[emo] = {
             "precision": float(p_per_class[i] * 100.0),
             "recall": float(r_per_class[i] * 100.0),
@@ -646,7 +675,8 @@ def main():
         print(f"\n📂 Nạp dữ liệu: {display_name}")
         print(f"👉 Thư mục: {data_path}")
         try:
-            ds = CrossDomainDataset(data_path, dataset_type=key)
+            include_contempt = (getattr(model, "num_classes", 7) == 8) and (key == "ferplus")
+            ds = CrossDomainDataset(data_path, dataset_type=key, include_contempt=include_contempt)
             if len(ds) == 0:
                 print(f"⚠️ Không tìm thấy ảnh nào trong: {data_path}")
                 continue

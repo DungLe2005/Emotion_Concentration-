@@ -56,6 +56,7 @@ from dataset.dataset_loader import (
     AutoBenchmarkDatasetReader,
     RAFDBDatasetReader,
     STANDARD_EMOTIONS,
+    FERPLUS_8_EMOTIONS,
     STANDARD_LABEL_TO_IDX,
     get_emotion_centroid_embeddings,
 )
@@ -278,10 +279,12 @@ class MultimodalLoRAModel(nn.Module):
         lora_dropout: float = 0.05,
         num_classes: int = 7,
         facial_out_dim: int = 128,
+        emotions: Optional[List[str]] = None,
     ):
         super().__init__()
         self.clip = clip_model
-        self.num_classes = num_classes
+        self.emotions = emotions or (FERPLUS_8_EMOTIONS if num_classes == 8 else STANDARD_EMOTIONS)
+        self.num_classes = len(self.emotions)
         self.facial_out_dim = facial_out_dim
 
         # Tiêm LoRA vào nhánh Visual của CLIP
@@ -294,10 +297,10 @@ class MultimodalLoRAModel(nn.Module):
             enable_mlp_lora=True,
         )
 
-        # Tiền mã hóa ngữ nghĩa 7 lớp cảm xúc qua Prompt Ensembling (Centroid Embedding)
+        # Tiền mã hóa ngữ nghĩa các lớp cảm xúc qua Prompt Ensembling (Centroid Embedding)
         with torch.no_grad():
             dev = next(clip_model.parameters()).device
-            t_norm = get_emotion_centroid_embeddings(clip_model, device=dev)
+            t_norm = get_emotion_centroid_embeddings(clip_model, device=dev, emotions=self.emotions)
             self.register_buffer("cached_text_norm", t_norm)
 
         # Tầng chiếu tuyến tính riêng biệt cho nhánh Visual (512D -> 512D)
@@ -313,9 +316,9 @@ class MultimodalLoRAModel(nn.Module):
             dropout=0.1,
         )
 
-        # Classifier Head nhận vector 647D: [512D Visual + 7D Text + 128D Facial CA]
-        total_dim = 512 + 7 + facial_out_dim
-        self.head = EmotionMLP(input_dim=total_dim, num_classes=num_classes)
+        # Classifier Head nhận vector: [512D Visual + num_classes Text + 128D Facial CA]
+        total_dim = 512 + self.num_classes + facial_out_dim
+        self.head = EmotionMLP(input_dim=total_dim, num_classes=self.num_classes)
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         # 1. Trích xuất đồng thời global visual (512D) và spatial patch tokens (49/196, 768D)
@@ -432,6 +435,9 @@ def run_training(args):
     else:
         reader = DatasetRegistry.get_reader(args.dataset)
     splits = reader.get_splits()
+    emotions = getattr(reader, "emotions", STANDARD_EMOTIONS)
+    num_classes = len(emotions)
+    print(f"  - Số lớp cảm xúc ({num_classes}): {emotions}")
     if "train" not in splits or ("val" not in splits and "test" not in splits):
         raise ValueError(
             f"Dataset '{args.dataset}' không có đủ splits 'train' và 'val'/'test'!"
@@ -562,7 +568,8 @@ def run_training(args):
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        num_classes=len(STANDARD_EMOTIONS),
+        num_classes=num_classes,
+        emotions=emotions,
     ).to(device)
 
     print(f"  - Các Blocks đã tiêm LoRA: {model.lora_info['target_blocks']}")
@@ -609,10 +616,10 @@ def run_training(args):
     )
 
     # 5. Class Weights & Loss
-    class_counts = np.bincount(train_labels, minlength=len(STANDARD_EMOTIONS))
+    class_counts = np.bincount(train_labels, minlength=num_classes)
     total_samples = len(train_labels)
     class_weights = total_samples / (
-        len(STANDARD_EMOTIONS) * np.maximum(class_counts, 1).astype(float)
+        num_classes * np.maximum(class_counts, 1).astype(float)
     )
     class_weights = torch.tensor(class_weights, dtype=torch.float, device=device)
     criterion = FocalLoss(alpha=class_weights, gamma=2.0, label_smoothing=0.05)
@@ -625,6 +632,7 @@ def run_training(args):
 
     # Resume checkpoint nếu được yêu cầu
     start_epoch = 1
+    start_step = 0
     best_val_f1 = 0.0
     patience_counter = 0
     if args.resume or args.resume_file:
@@ -731,11 +739,17 @@ def run_training(args):
                     except Exception:
                         pass
 
-                start_epoch = ckpt.get("epoch", 0) + 1
+                saved_step = int(ckpt.get("step_in_epoch", 0))
+                if saved_step > 0:
+                    start_epoch = ckpt.get("epoch", 1)
+                    start_step = saved_step
+                else:
+                    start_epoch = ckpt.get("epoch", 0) + 1
+                    start_step = 0
                 best_val_f1 = ckpt.get("best_val_f1", ckpt.get("val_f1", 0.0))
                 patience_counter = ckpt.get("patience_counter", 0)
                 print(
-                    f"  🎉 Nạp thành công! Bắt đầu tiếp tục từ Epoch {start_epoch}, Best Val F1 hiện tại: {best_val_f1:.4f}"
+                    f"  🎉 Nạp thành công! Tiếp tục từ Epoch {start_epoch} (Step {start_step}), Best Val F1 hiện tại: {best_val_f1:.4f}"
                 )
             except Exception as e:
                 print(f"  ❌ Lỗi khi nạp checkpoint {found_ckpt}: {e}")
@@ -752,15 +766,76 @@ def run_training(args):
     print("\n[2/4] Bắt đầu quá trình Huấn Luyện LoRA...")
     history = {"train_loss": [], "val_loss": [], "val_acc": [], "val_f1": []}
 
+    resume_root_dir = os.path.join(BACKEND_DIR, "..", "resume")
+    os.makedirs(resume_root_dir, exist_ok=True)
+    os.makedirs(args.save_dir, exist_ok=True)
+    drive_sync_dir = None
+    if os.path.exists("/content/drive/MyDrive"):
+        drive_sync_dir = f"/content/drive/MyDrive/edufocus_weights_{args.dataset.lower()}"
+        os.makedirs(drive_sync_dir, exist_ok=True)
+        print(f"  ☁️ Đã bật đồng bộ checkpoint tự động lên Google Drive: {drive_sync_dir}")
+
+    def _build_ckpt(ep: int, step_ep: int, v_f1: float, v_acc: float) -> Dict:
+        return {
+            "epoch": ep,
+            "step_in_epoch": step_ep,
+            "num_classes": num_classes,
+            "emotions": emotions,
+            "val_f1": v_f1,
+            "val_acc": v_acc,
+            "best_val_f1": best_val_f1,
+            "patience_counter": patience_counter,
+            "lora_info": model.lora_info,
+            "lora_state_dict": extract_lora_state_dict(model.clip),
+            "visual_proj": model.visual_proj.state_dict(),
+            "facial_cross_attn": model.facial_cross_attn.state_dict(),
+            "head": model.head.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict() if scheduler else None,
+            "scaler": scaler.state_dict() if scaler else None,
+        }
+
+    def _save_last_checkpoint(ckpt_obj: Dict):
+        safe_torch_save(ckpt_obj, os.path.join(args.save_dir, "lora_last.pth"))
+        safe_torch_save(ckpt_obj, os.path.join(WEIGHTS_DIR, "lora_last.pth"))
+        safe_torch_save(ckpt_obj, os.path.join(resume_root_dir, "lora_last.pth"))
+        if drive_sync_dir:
+            try:
+                import shutil
+                shutil.copy2(
+                    os.path.join(args.save_dir, "lora_last.pth"),
+                    os.path.join(drive_sync_dir, "lora_last.pth"),
+                )
+            except Exception:
+                pass
+
+    save_every_steps = getattr(args, "save_every_steps", 0)
+
     for epoch in range(start_epoch, args.epochs + 1):
         t0 = time.time()
         model.train()
         total_train_loss = 0.0
+        batches_run = 0
+
+        # Dùng generator cố định theo epoch để có thể resume đúng step giữa chừng
+        ep_generator = torch.Generator()
+        ep_generator.manual_seed(42 + epoch)
+        epoch_train_loader = DataLoader(
+            train_ds,
+            batch_size=args.batch_size,
+            shuffle=True,
+            generator=ep_generator,
+            num_workers=args.workers,
+            pin_memory=True,
+        )
 
         pbar = safe_tqdm(
-            train_loader, desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Train]"
+            epoch_train_loader, desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Train]"
         )
-        for imgs, lbls in pbar:
+        for batch_idx, (imgs, lbls) in enumerate(pbar):
+            if epoch == start_epoch and start_step > 0 and batch_idx < start_step:
+                continue
+
             imgs, lbls = imgs.to(device, non_blocking=True), lbls.to(
                 device, non_blocking=True
             )
@@ -783,10 +858,17 @@ def run_training(args):
                 optimizer.step()
 
             total_train_loss += loss.item()
+            batches_run += 1
             pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
+            if save_every_steps > 0 and (batch_idx + 1) % save_every_steps == 0:
+                mid_ckpt = _build_ckpt(epoch, batch_idx + 1, best_val_f1, 0.0)
+                _save_last_checkpoint(mid_ckpt)
+                print(f"\n  💾 [Checkpoint giữa Epoch {epoch}] Đã lưu tại step {batch_idx + 1}/{len(epoch_train_loader)}")
+
+        start_step = 0
         scheduler.step()
-        avg_train_loss = total_train_loss / max(1, len(train_loader))
+        avg_train_loss = total_train_loss / max(1, batches_run)
 
         # Đánh giá trên Validation
         model.eval()
@@ -833,43 +915,10 @@ def run_training(args):
         history["val_acc"].append(val_acc)
         history["val_f1"].append(val_f1)
 
-        # Thư mục lưu checkpoint phục vụ Resume (cục bộ và Drive nếu có)
-        resume_root_dir = os.path.join(BACKEND_DIR, "..", "resume")
-        os.makedirs(resume_root_dir, exist_ok=True)
-        os.makedirs(args.save_dir, exist_ok=True)
-        drive_sync_dir = f"/content/drive/MyDrive/edufocus_weights_{args.dataset.lower()}"
-
-        lora_sd = extract_lora_state_dict(model.clip)
-        checkpoint_data = {
-            "epoch": epoch,
-            "val_f1": val_f1,
-            "val_acc": val_acc,
-            "best_val_f1": best_val_f1,
-            "patience_counter": patience_counter,
-            "lora_info": model.lora_info,
-            "lora_state_dict": lora_sd,
-            "visual_proj": model.visual_proj.state_dict(),
-            "facial_cross_attn": model.facial_cross_attn.state_dict(),
-            "head": model.head.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict() if scheduler else None,
-            "scaler": scaler.state_dict() if scaler else None,
-        }
+        checkpoint_data = _build_ckpt(epoch, 0, val_f1, val_acc)
 
         # Lưu lora_last.pth sau MỖI epoch vào thư mục weights tập trung và Drive nếu có
-        safe_torch_save(checkpoint_data, os.path.join(WEIGHTS_DIR, "lora_last.pth"))
-        safe_torch_save(checkpoint_data, os.path.join(args.save_dir, "lora_last.pth"))
-        safe_torch_save(checkpoint_data, os.path.join(resume_root_dir, "lora_last.pth"))
-        if os.path.exists(drive_sync_dir):
-            try:
-                import shutil
-
-                shutil.copy2(
-                    os.path.join(WEIGHTS_DIR, "lora_last.pth"),
-                    os.path.join(drive_sync_dir, "lora_last.pth"),
-                )
-            except Exception:
-                pass
+        _save_last_checkpoint(checkpoint_data)
 
         # Kiểm tra lưu checkpoint tốt nhất
         if val_f1 > best_val_f1:
@@ -1009,8 +1058,8 @@ def run_training(args):
             classification_report(
                 test_targets,
                 test_preds,
-                labels=list(range(len(STANDARD_EMOTIONS))),
-                target_names=STANDARD_EMOTIONS,
+                labels=list(range(num_classes)),
+                target_names=emotions,
                 digits=4,
                 zero_division=0,
             )
@@ -1019,6 +1068,8 @@ def run_training(args):
         # Lưu kết quả Test vào JSON
         test_report = {
             "dataset": args.dataset,
+            "num_classes": num_classes,
+            "emotions": emotions,
             "num_samples": len(test_targets),
             "test_accuracy": float(test_acc * 100.0),
             "test_macro_f1": float(test_f1 * 100.0),
@@ -1186,6 +1237,12 @@ def main():
         type=str,
         default=None,
         help="Tên file checkpoint cụ thể trong folder resume",
+    )
+    parser.add_argument(
+        "--save_every_steps",
+        type=int,
+        default=0,
+        help="Lưu checkpoint giữa epoch sau mỗi N bước (khuyên dùng 500 cho AffectNet-7)",
     )
     args = parser.parse_args()
 
